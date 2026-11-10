@@ -1,5 +1,5 @@
 """
-Module C Canonical Envelope and Pipeline Orchestrator.
+Module C Canonical Envelope and Pipeline Orchestrator — 1-Stage Multimodal.
 Adheres strictly to PRD §6.3 Canonical Output Envelope, FR-EXT-001..007,
 FR-VAL-001..004, FR-CNF-001..003, GR-002, GR-003, GR-027.
 """
@@ -14,17 +14,21 @@ from doc_extractor.contracts_c import (
     DocumentMetadata,
     EvidenceSnippet,
     EvidenceModel,
+    ExecutionMode,
+    ExecutionProvenance,
     ExtractedField,
     FieldOutput,
     FlagItem,
     RunMetadata,
 )
-from doc_extractor.extractor import SchemaGuidedExtractor, find_evidence_for_value
+from doc_extractor.extractor import SchemaGuidedExtractor, SCHEMA_MAP, find_evidence_for_value
 from doc_extractor.field_assembly import (
     assemble_canonical_envelope,
     assemble_field_entry,
 )
+from doc_extractor.handoff import CoordinateTransform, PageHandoffRecord
 from doc_extractor.validation_rules import (
+    normalize_and_format,
     normalize_date_to_iso,
     normalize_phone_number,
     normalize_currency_amount,
@@ -71,16 +75,46 @@ class ModuleCPipeline:
                 ),
             )
 
-        # Run schema-constrained extraction (FR-EXT-001, FR-EXT-002, SCH-007)
+        doc_type = payload.classification.document_type.value
+        schema_cls = SCHEMA_MAP.get(doc_type)
+
+        if not schema_cls:
+            return CanonicalExtractionEnvelope(
+                document_id=payload.document_id,
+                document_metadata=DocumentMetadata(
+                    document_type=doc_type,
+                    schema_id=payload.classification.schema_id or "UNKNOWN",
+                    schema_version=payload.classification.schema_version or "1.0.0",
+                    classification_confidence=payload.classification.classification_confidence,
+                    status="needs_review",
+                    page_count=len(payload.pages),
+                ),
+                fields={},
+                flags=[FlagItem(code="NO_SCHEMA_BOUND", message=f"No schema registered for document type {doc_type}", fields=[])],
+                run=RunMetadata(
+                    run_id=payload.run_id,
+                    model_versions={"parser": payload.parser_model_name, "extractor": self.extractor.model_name},
+                    prompt_version=self.extractor.prompt_version,
+                ),
+            )
+
+        # Extract structured data using SchemaGuidedExtractor (multimodal or deterministic)
         if hasattr(self.extractor, "extract_with_provenance"):
-            extraction_result = self.extractor.extract_with_provenance(payload)
+            extraction_result = self.extractor.extract_with_provenance(payload, schema_cls=schema_cls)
             extracted_data = extraction_result.payload
             execution_provenance = extraction_result.provenance
         else:
-            extracted_data = self.extractor.extract(payload)
+            extracted_data = self.extractor.extract(payload, schema_cls=schema_cls)
             execution_provenance = getattr(self.extractor, "last_provenance", None)
 
-        doc_type = payload.classification.document_type.value
+        if execution_provenance is None:
+            execution_provenance = ExecutionProvenance(
+                mode=ExecutionMode.HEURISTIC,
+                model_name=self.extractor.model_name,
+                provider="local_extractor",
+                prompt_version=self.extractor.prompt_version,
+                fallback_occurred=False,
+            )
 
         fields_envelope: Dict[str, ExtractedField] = {}
         flags: List[FlagItem] = []
@@ -104,7 +138,7 @@ class ModuleCPipeline:
             run_id=payload.run_id,
             parser_model_name=payload.parser_model_name,
             extractor_model_name=getattr(self.extractor, "model_name", "unknown"),
-            prompt_version="1.0.0",
+            prompt_version=self.extractor.prompt_version,
             provenance=execution_provenance,
             payload_status=payload.status,
         )
@@ -231,7 +265,7 @@ class ModuleCPipeline:
         # Repeating groups: Nominees (FR-EXT-005)
         nominees = getattr(extracted_data, "nominees", []) or []
         for idx, nom in enumerate(nominees):
-            nom_dict = nom.model_dump() if hasattr(nom, "model_dump") else nom
+            nom_dict = nom.model_dump() if hasattr(nom, "model_dump") else (nom if isinstance(nom, dict) else {})
             fields_envelope[f"nominees.{idx}.name"] = self._create_field_entry(
                 f"nominees.{idx}.name", nom_dict.get("name"), payload, flags, required=False
             )
@@ -300,7 +334,7 @@ class ModuleCPipeline:
         # Repeating group: Medications (FR-EXT-005)
         meds = getattr(extracted_data, "medications", []) or []
         for idx, m in enumerate(meds):
-            m_dict = m.model_dump() if hasattr(m, "model_dump") else m
+            m_dict = m.model_dump() if hasattr(m, "model_dump") else (m if isinstance(m, dict) else {})
             fields_envelope[f"medications.{idx}.medicine_name"] = self._create_field_entry(
                 f"medications.{idx}.medicine_name", m_dict.get("medicine_name"), payload, flags, required=False
             )

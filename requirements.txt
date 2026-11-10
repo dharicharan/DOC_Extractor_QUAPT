@@ -14,6 +14,14 @@ numpy>=1.24.0
 # Module C: Schema-Guided Extraction & Normalization
 instructor>=1.0.0
 litellm>=1.40.0
+transformers>=4.49.0
+accelerate>=0.26.0
+bitsandbytes>=0.43.0
+qwen-vl-utils>=0.0.8
 
 # Schema Lifecycle: Schema Metamodel & YAML/JSON Serialization (SCH-003)
 PyYAML>=6.0.0
+
+# Interactive UI / Kaggle testing demo
+gradio>=4.0.0
+

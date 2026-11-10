@@ -2,15 +2,23 @@
 Extraction Engine and Evidence Linker for Module C.
 Strictly adheres to PRD §5.4 (FR-EXT-001, FR-EXT-002, FR-EXT-003, FR-EXT-004, FR-EXT-005, FR-EXT-007)
 and PRD §6.3 Output Contract.
+Supports 1-Stage Multimodal extraction with Qwen2.5-VL / Qwen3-VL as well as
+grammar-guided LLM and deterministic extraction.
 """
 
+import base64
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
-from pydantic import BaseModel
+import json
+import logging
+import os
+from pathlib import Path
 import re
 import threading
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+import urllib.request
+from pydantic import BaseModel
 
-from doc_extractor.contracts_b import ModuleBOutputPayload, PageLayoutOutput, BoundingBox
+from doc_extractor.contracts_b import BoundingBox, ModuleBOutputPayload, PageLayoutOutput
 from doc_extractor.contracts_c import (
     ExecutionMode,
     ExecutionProvenance,
@@ -19,12 +27,13 @@ from doc_extractor.contracts_c import (
 from doc_extractor.exceptions import LLMExecutionError
 from doc_extractor.schemas import (
     CASASchema,
-    InsuranceApplicationSchema,
     DischargeSummarySchema,
-    NomineeDetails,
+    InsuranceApplicationSchema,
     MedicationItem,
+    NomineeDetails,
 )
 
+logger = logging.getLogger("doc_extractor.extractor")
 
 SCHEMA_MAP: Dict[str, Type[BaseModel]] = {
     "DOC-01": CASASchema,
@@ -96,12 +105,9 @@ def find_evidence_for_value(
                             "ocr_confidence": 0.5 if cb.is_uncertain else cb.ocr_confidence,
                         }
 
-        # If field_name matched specific checkbox marks but none matched the value state,
-        # never fall back to an unrelated checkbox mark.
         if matched_any_checkbox_for_field:
             return None
 
-        # Fallback for un-named calls or documents where checkboxes are unlabelled
         if not field_name:
             for page in pages:
                 for cb in page.checkboxes:
@@ -142,14 +148,12 @@ def find_evidence_for_value(
         if any(c in t_low for c in candidates if c):
             return True
         if clean_numeric_targets:
-            # Strip commas and spaces to match numbers across different grouping conventions
             t_clean = re.sub(r"[,\s]", "", t_low)
             if any(target in t_clean for target in clean_numeric_targets if target):
                 return True
         return False
 
     for page in pages:
-        # 1. Character grids first: PAN, names in printed boxes (highest precision)
         for grid in page.character_grids:
             grid_text = grid.reconstructed_text.strip()
             if matches_text(grid_text) or any(grid_text.lower() in c for c in candidates if len(grid_text) > 3):
@@ -161,7 +165,6 @@ def find_evidence_for_value(
                     "ocr_confidence": grid.mean_ocr_confidence,
                 }
 
-        # 2. Layout blocks (paragraphs, key-value pairs, headers)
         for block in page.blocks:
             block_text = block.text.strip()
             if matches_text(block_text):
@@ -173,7 +176,6 @@ def find_evidence_for_value(
                     "ocr_confidence": block.ocr_confidence,
                 }
 
-        # 3. HTML Tables (for medications, nominees, line items)
         for table in page.tables:
             if matches_text(table.html_content):
                 bbox = table.bbox_original
@@ -184,7 +186,6 @@ def find_evidence_for_value(
                     "ocr_confidence": table.ocr_confidence,
                 }
 
-    # GR-002 strict: never fabricate a bounding box. Return None if no grounded evidence found.
     return None
 
 
@@ -192,8 +193,8 @@ class SchemaGuidedExtractor:
     """
     Module C Schema-Guided Extractor.
     FR-EXT-001, FR-EXT-002: Extracts schema fields using LLM grammar-guided decoding
-    (instructor + litellm) when use_llm=True. Falls back to deterministic heuristics
-    for offline testing or when no LLM is configured.
+    (instructor + litellm, or Qwen-VL multimodal) when use_llm=True. Falls back to deterministic
+    heuristics for offline testing or when no LLM is configured.
     Supports strict no-fallback mode and execution provenance tracking (SCH-007).
     """
 
@@ -205,7 +206,11 @@ class SchemaGuidedExtractor:
         prompt_version: str = "1.0.0",
         provider_name: Optional[str] = None,
         is_mock: bool = False,
-        llm_caller: Optional[Callable[[ModuleBOutputPayload, Type[BaseModel]], Tuple[BaseModel, Optional[str]]]] = None,
+        llm_caller: Optional[Callable[[ModuleBOutputPayload, Type[BaseModel]], Tuple[Any, Optional[str]]]] = None,
+        device: str = "auto",
+        max_new_tokens: int = 2048,
+        temperature: float = 0.0,
+        trust_remote_code: bool = True,
     ):
         self.model_name = model_name
         self.use_llm = use_llm
@@ -214,12 +219,17 @@ class SchemaGuidedExtractor:
         self.provider_name = provider_name
         self.is_mock = is_mock
         self.llm_caller = llm_caller
+        self.device = device
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.trust_remote_code = trust_remote_code
+        self._model = None
+        self._processor = None
         self._local = threading.local()
         self._local.last_provenance = None
 
     @property
     def last_provenance(self) -> Optional[ExecutionProvenance]:
-        """Thread-isolated last execution provenance for legacy callers."""
         local = getattr(self, "_local", None)
         if local is None:
             return None
@@ -236,11 +246,7 @@ class SchemaGuidedExtractor:
         payload: ModuleBOutputPayload,
         schema_cls: Optional[Type[BaseModel]] = None,
     ) -> BaseModel:
-        """
-        Legacy/default extraction interface.
-        Extracts structured data according to the bound schema.
-        Preserves backward compatibility by returning BaseModel directly.
-        """
+        """Legacy/default extraction interface returning BaseModel directly."""
         result = self.extract_with_provenance(payload, schema_cls=schema_cls)
         return result.payload
 
@@ -253,7 +259,6 @@ class SchemaGuidedExtractor:
         Extracts structured data and generates trusted execution provenance (SCH-007).
         Enforces strict no-fallback behavior when allow_fallback=False.
         """
-        # Reset provenance at start of execution to prevent stale provenance reuse
         self.last_provenance = None
 
         doc_type = payload.classification.document_type.value
@@ -336,10 +341,7 @@ class SchemaGuidedExtractor:
         payload: ModuleBOutputPayload,
         schema_cls: Type[BaseModel],
     ) -> Tuple[BaseModel, Optional[str]]:
-        """
-        Executes genuine LLM grammar-constrained extraction.
-        Returns (model_instance, request_id).
-        """
+        """Executes LLM extraction via custom caller, vLLM / Qwen-VL, or litellm."""
         if self.llm_caller is not None:
             res = self.llm_caller(payload, schema_cls)
             if isinstance(res, tuple) and len(res) == 2:
@@ -350,7 +352,6 @@ class SchemaGuidedExtractor:
             if model_inst is None:
                 raise ValueError("LLM caller returned None")
 
-            # Verify that response is valid schema instance
             if not isinstance(model_inst, schema_cls):
                 if isinstance(model_inst, dict):
                     model_inst = schema_cls.model_validate(model_inst)
@@ -360,8 +361,15 @@ class SchemaGuidedExtractor:
             request_id = str(req_id).strip() if (req_id is not None and str(req_id).strip()) else None
             return model_inst, request_id
 
-        import instructor  # noqa: PLC0415
-        import litellm     # noqa: PLC0415
+        # Multimodal VLM path if images exist
+        first_img = getattr(payload.pages[0], "preprocessed_storage_uri", None) if payload.pages else None
+        if first_img and os.path.exists(first_img):
+            raw_dict, _ = self.extract_page_image(first_img, schema_cls)
+            return schema_cls.model_validate(raw_dict), None
+
+        # Text LLM fallback via instructor / litellm
+        import instructor
+        import litellm
 
         client = instructor.from_litellm(litellm.completion)
         completion_res = client.chat.completions.create_with_completion(
@@ -407,13 +415,171 @@ class SchemaGuidedExtractor:
 
         return model_inst, request_id
 
-    def _extract_llm(self, payload: ModuleBOutputPayload, schema_cls: Type[BaseModel]) -> BaseModel:
-        """Backward-compatible internal delegate."""
-        try:
-            model_inst, _ = self._extract_llm_internal(payload, schema_cls)
-            return model_inst
-        except Exception:
-            return self._extract_heuristic(payload, payload.classification.document_type.value, schema_cls)
+    def extract_page_image(
+        self,
+        image_input: Union[str, Path, bytes],
+        schema_cls: Type[BaseModel],
+    ) -> Tuple[Dict[str, Any], ExecutionProvenance]:
+        """Direct 1-stage Qwen-VL multimodal extraction from page image."""
+        vllm_api_base = os.environ.get("OPENAI_API_BASE") or os.environ.get("VLLM_API_BASE")
+        if vllm_api_base:
+            return self._extract_via_vllm_api(image_input, schema_cls, vllm_api_base)
+
+        model, processor = self._load_model()
+        system_prompt = self._build_system_prompt(schema_cls)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": str(image_input) if isinstance(image_input, (str, Path)) else image_input},
+                    {"type": "text", "text": "Extract all fields from this document page."},
+                ],
+            },
+        ]
+
+        from qwen_vl_utils import process_vision_info
+        import torch
+
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                do_sample=self.temperature > 0,
+            )
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+
+        cleaned = re.sub(r"^```json\s*", "", output_text.strip(), flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+        raw_dict = json.loads(cleaned) if cleaned else {}
+
+        prov = ExecutionProvenance(
+            mode=ExecutionMode.GENUINE_LLM,
+            model_name=self.model_name,
+            provider="transformers_qwen_vl",
+            prompt_version=self.prompt_version,
+            fallback_occurred=False,
+        )
+        self.last_provenance = prov
+        return raw_dict, prov
+
+    def _extract_via_vllm_api(
+        self,
+        image_input: Union[str, Path, bytes],
+        schema_cls: Type[BaseModel],
+        api_base: str,
+    ) -> Tuple[Dict[str, Any], ExecutionProvenance]:
+        """Calls vLLM OpenAI-compatible vision completions endpoint."""
+        if isinstance(image_input, (str, Path)):
+            with open(image_input, "rb") as f:
+                b64_img = base64.b64encode(f.read()).decode("utf-8")
+        else:
+            b64_img = base64.b64encode(image_input).decode("utf-8")
+
+        prompt = self._build_system_prompt(schema_cls)
+        req_body = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}},
+                        {"type": "text", "text": "Extract all fields from this document page."},
+                    ],
+                },
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_new_tokens,
+        }
+
+        url = f"{api_base.rstrip('/')}/chat/completions"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(req_body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer dummy"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"]
+
+        cleaned = re.sub(r"^```json\s*", "", content.strip(), flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+        raw_dict = json.loads(cleaned) if cleaned else {}
+
+        prov = ExecutionProvenance(
+            mode=ExecutionMode.GENUINE_LLM,
+            model_name=self.model_name,
+            provider="vllm_openai_api",
+            prompt_version=self.prompt_version,
+            fallback_occurred=False,
+        )
+        self.last_provenance = prov
+        return raw_dict, prov
+
+    def _load_model(self):
+        """Lazily load Qwen2.5-VL model and processor."""
+        if self._model is None or self._processor is None:
+            import torch
+            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_name,
+                trust_remote_code=self.trust_remote_code,
+            )
+            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=self.device,
+                trust_remote_code=self.trust_remote_code,
+            )
+            self._model.eval()
+        return self._model, self._processor
+
+    def _build_system_prompt(self, schema_cls: Type[BaseModel]) -> str:
+        """Constructs schema-bound system prompt."""
+        field_lines: List[str] = []
+        for field_name, field_info in schema_cls.model_fields.items():
+            desc = field_info.description or ""
+            field_lines.append(
+                f'  "{field_name}": {{"value": "<extracted_string_or_null>", "bbox": [ymin, xmin, ymax, xmax]}}  # {desc}'
+            )
+        fields_json = ",\n".join(field_lines)
+
+        return f"""You are an expert document extraction engine specialized in BFSI and Healthcare documents.
+
+TASK: Read the provided document image and extract all fields defined in the target schema below. Output a SINGLE valid JSON object only.
+
+TARGET SCHEMA FIELDS:
+{fields_json}
+
+OUTPUT FORMAT (STRICT):
+- Return a flat JSON object where each key is a field name from the schema.
+- Each field value must be an object with exactly two keys: "value" and "bbox".
+- "value": The extracted string or numeric value, or null if the field is absent or illegible.
+- "bbox": Bounding box in [ymin, xmin, ymax, xmax] format, normalized to [0-1000] range.
+- GR-002: NO value without a grounded bounding box. If you cannot visually locate the text, set value to null and bbox to null.
+- GR-003: null by default; absent or illegible fields get null value with null bbox.
+- Do NOT include markdown code fences (```json ... ```). Return raw JSON only.
+- Preserve leading zeros on account numbers and IDs.
+"""
 
     def _extract_heuristic(
         self,
@@ -426,31 +592,25 @@ class SchemaGuidedExtractor:
         extracted_dict: Dict[str, Any] = {}
 
         if doc_type == "DOC-01":
-            # Extract CASA fields
             applicant: Dict[str, Any] = {}
             account_details: Dict[str, Any] = {}
 
-            # Name match (from grid or line, up to newline)
             name_match = re.search(r"(?:name|applicant name)\s*[:\-]?\s*([A-Z\s]{3,30}?)(?:\n|$)", md, re.IGNORECASE)
             if name_match:
                 applicant["full_name"] = name_match.group(1).strip()
 
-            # PAN match
             pan_match = re.search(r"\b([A-Z]{5}[0-9]{4}[A-Z])\b", md)
             if pan_match:
                 applicant["pan_card_number"] = pan_match.group(1).strip()
 
-            # DOB match
             dob_match = re.search(r"(?:dob|date of birth|birth date)\s*[:\-]?\s*([0-9\/\-\.]+)", md, re.IGNORECASE)
             if dob_match:
                 applicant["date_of_birth"] = dob_match.group(1).strip()
 
-            # Phone match
             phone_match = re.search(r"(?:phone|mobile|contact)\s*[:\-]?\s*(\+?[0-9\s\-]{10,14})", md, re.IGNORECASE)
             if phone_match:
                 applicant["phone_number"] = phone_match.group(1).strip()
 
-            # Checkbox opt-in services (FR-EXT-007)
             opt_in: Dict[str, Any] = {}
             if "[x] cheque book" in md.lower() or "cheque book: [x]" in md.lower():
                 opt_in["cheque_book"] = True
@@ -469,7 +629,6 @@ class SchemaGuidedExtractor:
 
             account_details["opt_in_services"] = opt_in
 
-            # Initial deposit
             deposit_match = re.search(r"(?:initial deposit|deposit amount)\s*[:\-]?\s*(?:inr|rs\.?)?\s*([0-9,\.]+)", md, re.IGNORECASE)
             if deposit_match:
                 cleaned_num = deposit_match.group(1).replace(",", "").strip()
@@ -482,7 +641,6 @@ class SchemaGuidedExtractor:
             extracted_dict["account_details"] = account_details
 
         elif doc_type == "DOC-02":
-            # Extract Insurance fields
             proposer_match = re.search(r"(?:proposer name|insured name|proposer)\s*[:\-]?\s*([A-Za-z\s]{3,30}?)(?:\n|$)", md, re.IGNORECASE)
             if proposer_match:
                 extracted_dict["proposer_name"] = proposer_match.group(1).strip()
@@ -502,7 +660,6 @@ class SchemaGuidedExtractor:
                 except ValueError:
                     pass
 
-            # Repeating group: Nominees (FR-EXT-005)
             nominees: List[Dict[str, Any]] = []
             nominee_matches = re.finditer(r"nominee\s*[:\-]?\s*([A-Za-z\s]+?)\s*\(([^)]+)\)(?:\s*,?\s*(\d+)%)?", md, re.IGNORECASE)
             for n_match in nominee_matches:
@@ -532,7 +689,6 @@ class SchemaGuidedExtractor:
             extracted_dict["medical_declaration"] = med_dec
 
         elif doc_type == "DOC-03":
-            # Extract Discharge Summary fields
             patient_match = re.search(r"(?:patient name|patient)\s*[:\-]?\s*([A-Za-z\s]{3,30}?)(?:\n|$)", md, re.IGNORECASE)
             if patient_match:
                 extracted_dict["patient_name"] = patient_match.group(1).strip()
@@ -553,7 +709,6 @@ class SchemaGuidedExtractor:
             if diag_match:
                 extracted_dict["diagnosis"] = diag_match.group(1).strip()
 
-            # Repeating group: Prescribed Medications (FR-EXT-005)
             medications: List[Dict[str, Any]] = []
             med_lines = re.findall(r"(?:rx|medication|tab|cap|inj)\.?\s*([A-Za-z0-9\s]+?)\s+(\d+(?:mg|ml|g))\s+([A-Z]{2,3})\s+(?:for\s+)?(\d+\s*(?:days|weeks))", md, re.IGNORECASE)
             for m in med_lines:

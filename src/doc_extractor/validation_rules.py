@@ -14,6 +14,73 @@ IFSC_REGEX = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 PHONE_DIGITS_REGEX = re.compile(r"\D")
 
 
+# ---------------------------------------------------------------------------
+# normalize_and_format — deterministic BFSI / financial normalizer (PRD GR-002, GR-003)
+# ---------------------------------------------------------------------------
+def normalize_and_format(field_name: str, raw_value: Any) -> Tuple[Any, Optional[str]]:
+    """
+    Deterministic normalization helper for financial/BFSI data.
+
+    - Cleans currency strings (e.g., "Rs. 59,131.72" -> float 59131.72).
+    - Standardizes dates to ISO 8601 (YYYY-MM-DD) using normalize_date_to_iso.
+    - Validates Indian PAN format (^[A-Z]{5}[0-9]{4}[A-Z]$).
+    - Validates Aadhaar 12-digit numbers.
+    - Preserves string identifiers and account numbers (prevents leading zeros from being dropped).
+
+    Returns (normalized_value, error_message_or_None).
+    """
+    if raw_value is None:
+        return None, None
+
+    # Clean string input
+    if isinstance(raw_value, str):
+        raw_value = raw_value.strip()
+        if not raw_value:
+            return None, None
+
+    field_lower = field_name.lower()
+
+    # Currency fields
+    if any(kw in field_lower for kw in ("amount", "sum_insured", "deposit", "premium", "balance")):
+        val, _currency, err = normalize_currency_amount(raw_value)
+        if err:
+            return raw_value, err
+        return val, None
+
+    # Date fields
+    if any(kw in field_lower for kw in ("date", "dob", "birth", "admission", "discharge")):
+        return normalize_date_to_iso(raw_value)
+
+    # PAN fields
+    if "pan" in field_lower:
+        return validate_pan(raw_value)
+
+    # Aadhaar fields
+    if "aadhaar" in field_lower:
+        return validate_aadhaar(raw_value)
+
+    # String identifiers / account numbers — preserve as string to prevent leading zero loss
+    if any(
+        kw in field_lower
+        for kw in (
+            "account_number",
+            "account_no",
+            "ip_number",
+            "policy_number",
+            "customer_id",
+            "pan_card_number",
+            "phone_number",
+            "ifsc",
+        )
+    ):
+        if isinstance(raw_value, str):
+            return raw_value, None
+        return str(raw_value), None
+
+    # Default: return as-is
+    return raw_value, None
+
+
 # Verhoeff algorithm tables for Aadhaar checksum validation
 VERHOEFF_D = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],

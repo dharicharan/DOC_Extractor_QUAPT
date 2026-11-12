@@ -91,14 +91,16 @@ CLASSIFIER_SYSTEM_PROMPT = """You classify document images. Return raw JSON only
  "document_type": "DOC-01|DOC-02|DOC-03|DOC-04|DOC-05|DOC-06|DOC-07|DOC-08|OTHER",
  "subtype": "brochure|pamphlet|menu card|CASA leaflet|invitation card|other|null",
  "language": "en|hi|te|ta|ml",
- "confidence": 0.0-1.0}
+ "confidence": 0.0-1.0,
+ "rotation": 0|90|180|270}
 
 Definitions:
 - structured: forms with labelled blanks or boxes to fill (KYC, CASA account opening DOC-01, insurance application DOC-02, loan DOC-04, credit card DOC-05, claim DOC-06).
 - unstructured: free-layout printed material with no fixed fields (brochures, pamphlets, menu cards, invitation cards, policy wordings DOC-08, discharge summaries DOC-03).
 - handwritten: the content is mostly handwriting, e.g. a doctor's prescription DOC-07.
 A structured form with some handwritten entries is still structured.
-"language" is the dominant language of the text. Use null for subtype unless the category is unstructured."""
+"language" is the dominant language of the text. Use null for subtype unless the category is unstructured.
+"rotation" is how many degrees CLOCKWISE the page must be turned so the text reads upright (0 if already upright, 180 if upside down)."""
 
 _FILENAME_HINTS: List[Tuple[Tuple[str, ...], DocumentCategory, Optional[str]]] = [
     (("prescription", "rx"), DocumentCategory.HANDWRITTEN, "DOC-07"),

@@ -175,6 +175,7 @@ class ModuleBPipeline:
             parsed_pages: List[PageLayoutOutput] = []
             for loaded_page in load_result.pages:
                 page_layout = self.parser.parse_page(loaded_page)
+                page_layout.page_image_path = str(loaded_page.file_path)
 
                 # Optional Table Structure Reconstruction (Stage 3A)
                 if candidate_tables_by_page and loaded_page.page_number in candidate_tables_by_page:

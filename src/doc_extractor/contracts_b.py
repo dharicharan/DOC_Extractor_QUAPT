@@ -274,6 +274,10 @@ class PageLayoutOutput(BaseModel):
     tables: List[HTMLTable] = Field(default_factory=list)
     character_grids: List[CharacterGridMark] = Field(default_factory=list)
     mean_ocr_confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    page_image_path: Optional[str] = Field(
+        default=None,
+        description="Local path of the preprocessed 200 DPI page image, so Module C can run the vision model on it",
+    )
 
 
 # ============================================================================

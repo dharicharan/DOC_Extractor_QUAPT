@@ -42,6 +42,25 @@ logger = logging.getLogger("doc_extractor.extractor")
 MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "4200000"))
 
 
+def _flat_to_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """VLM output {"applicant.full_name": {"value": ..., "bbox": ...}} -> nested {"applicant": {"full_name": ...}}
+    so it validates against the Pydantic schema. Free-form other.* keys are dropped."""
+    nested: Dict[str, Any] = {}
+    for key, item in (raw or {}).items():
+        if key.startswith("other."):
+            continue
+        value = item.get("value") if isinstance(item, dict) else item
+        node = nested
+        parts = key.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                break
+        else:
+            node[parts[-1]] = value
+    return nested
+
+
 def gpu_dtype():
     """bfloat16 on Ampere or newer; float16 on older GPUs such as the T4 (no native bf16)."""
     import torch
@@ -400,11 +419,11 @@ class SchemaGuidedExtractor:
             request_id = str(req_id).strip() if (req_id is not None and str(req_id).strip()) else None
             return model_inst, request_id
 
-        # Multimodal VLM path if images exist
-        first_img = getattr(payload.pages[0], "preprocessed_storage_uri", None) if payload.pages else None
+        # Multimodal VLM path: Module B now records the preprocessed page image path on each page
+        first_img = getattr(payload.pages[0], "page_image_path", None) if payload.pages else None
         if first_img and os.path.exists(first_img):
             raw_dict, _ = self.extract_page_image(first_img, schema_cls)
-            return schema_cls.model_validate(raw_dict), None
+            return schema_cls.model_validate(_flat_to_nested(raw_dict)), None
 
         # Text LLM fallback via instructor / litellm
         import instructor

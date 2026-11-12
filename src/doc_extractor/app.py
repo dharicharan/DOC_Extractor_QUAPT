@@ -214,6 +214,7 @@ def _resolve_page(
         "language_source": "user" if user_lang else "auto",
         "confidence": 1.0 if user_cat else auto.get("confidence", 0.0),
         "method": "user" if user_cat else auto.get("method", "-"),
+        "rotation": _safe_rotation(auto.get("rotation")),
     }
 
 
@@ -247,6 +248,22 @@ def _render_steps(steps: List[Dict[str, Any]]) -> str:
         t = f"{r['secs']:.1f}s" if r.get("secs") is not None else ("..." if r["state"] == "running" else "")
         lines.append(f"| {_STEP_ICONS[r['state']]} | {r['label']} | {r['detail']} | {t} |")
     return "\n".join(lines)
+
+
+def _safe_rotation(value: Any) -> int:
+    try:
+        r = int(value) % 360
+    except (TypeError, ValueError):
+        return 0
+    return r if r in (90, 180, 270) else 0
+
+
+def _rotate_page(path: Path, clockwise_deg: int) -> Path:
+    """Turn a page image upright (clockwise degrees) and save a copy next to the system temp dir."""
+    out = Path(tempfile.gettempdir()) / f"upright_{clockwise_deg}_{path.name}"
+    with Image.open(path) as im:
+        im.rotate(-clockwise_deg, expand=True).save(out)
+    return out
 
 
 def _thumb(path: Path) -> Image.Image:
@@ -347,6 +364,14 @@ def _process_core(
         doc_info = _resolve_page(page_items[0][1], claimed_name, rule_type, choices, 1)
         _step(steps, "cls", state="done",
               detail=f"{doc_info['category']} · {doc_info['document_type']} · {doc_info['language']} · {doc_info['category_source']}")
+
+        rotation = doc_info.get("rotation", 0)
+        if rotation:
+            # Orientation fix: the router saw the page sideways/upside down, so turn every page upright
+            # before extraction; boxes are then drawn on the upright image.
+            page_items = [(n, _rotate_page(p, rotation), _rotate_page(o, rotation) if o and o.exists() else None)
+                          for n, p, o in page_items]
+            _step(steps, "cls", detail=steps[[r["key"] for r in steps].index("cls")]["detail"] + f" · rotated {rotation}°")
 
         for page_no, img_path, orig_path in page_items:
             info = dict(doc_info, page=page_no)

@@ -36,10 +36,12 @@ from doc_extractor.schemas import (
 logger = logging.getLogger("doc_extractor.extractor")
 
 
-# Safety cap on image pixels sent to a vision model. Default keeps a full 200 DPI A4 page
-# (about 1654 x 2339 = 3.9 MP) at full resolution; with sdpa attention this should fit a 16 GB T4.
-# Lower it (e.g. DOC_MAX_IMAGE_PIXELS=1300000) only if a page still runs out of memory.
-MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "4200000"))
+# Cap on image pixels sent to a vision model. The vision encoder's attention memory grows with the
+# SQUARE of the pixel count: a full 200 DPI A4 page (3.9 MP, ~15k patches) needs one ~14 GB block,
+# which cannot fit a 16 GB T4. 2.0 MP (about 143 DPI for A4) needs roughly a quarter of that.
+# The earlier notebook tests ran at max_pixels=1280*28*28 (1.0 MP). Raise on a bigger GPU:
+# DOC_MAX_IMAGE_PIXELS=4200000 keeps full 200 DPI.
+MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "2000000"))
 # Classification (category, language, rotation) does not need 200 DPI: a small image is far faster.
 CLASSIFY_MAX_PIXELS = int(os.environ.get("DOC_CLASSIFY_MAX_PIXELS", "500000"))
 
@@ -263,9 +265,9 @@ class SchemaGuidedExtractor:
         provider_name: Optional[str] = None,
         is_mock: bool = False,
         llm_caller: Optional[Callable[[ModuleBOutputPayload, Type[BaseModel]], Tuple[Any, Optional[str]]]] = None,
-        # "balanced" spreads layers across all visible GPUs (e.g. Kaggle 2x T4) so each keeps headroom
-        # for image activations. Override with DOC_DEVICE_MAP (e.g. "auto", "cuda:0").
-        device: str = os.environ.get("DOC_DEVICE_MAP", "balanced"),
+        # Single GPU by default (faster than splitting layers across cards). "single" resolves to
+        # cuda:0 when a GPU exists, else "auto". Override with DOC_DEVICE_MAP (e.g. "balanced", "auto").
+        device: str = os.environ.get("DOC_DEVICE_MAP", "single"),
         max_new_tokens: int = 2048,
         temperature: float = 0.0,
         trust_remote_code: bool = True,
@@ -657,9 +659,12 @@ class SchemaGuidedExtractor:
                 self.model_name,
                 trust_remote_code=self.trust_remote_code,
             )
+            device_map = self.device
+            if device_map == "single":
+                device_map = "cuda:0" if torch.cuda.is_available() else "auto"
             kwargs = {
                 "attn_implementation": "sdpa",  # memory-efficient attention (eager materialises huge matrices)
-                "device_map": self.device,
+                "device_map": device_map,
                 "trust_remote_code": self.trust_remote_code,
             }
             if getattr(self, "load_in_4bit", True):

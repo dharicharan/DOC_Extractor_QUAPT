@@ -31,6 +31,15 @@ DEFAULT_TEXT_MODEL = "Qwen/Qwen3-4B-Instruct-2507"  # pure text, non-thinking on
 OCR_PROMPT = "Text Recognition:"
 
 
+def _side_device() -> str:
+    """OCR and text models go on the second GPU when there is one, leaving GPU 0 to the main VLM."""
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
+    return "auto"
+
+
 class ModelAdapter(ABC):
     """Common interface for every routed specialist."""
 
@@ -94,7 +103,7 @@ class OCRTextAdapter(ModelAdapter):
 
             self._ocr_proc = AutoProcessor.from_pretrained(self.ocr_model, trust_remote_code=True)
             self._ocr = AutoModelForImageTextToText.from_pretrained(
-                self.ocr_model, torch_dtype=gpu_dtype(), device_map="balanced", trust_remote_code=True,
+                self.ocr_model, torch_dtype=gpu_dtype(), device_map=_side_device(), trust_remote_code=True,
                 attn_implementation="sdpa",
             )
             self._ocr.eval()
@@ -106,7 +115,7 @@ class OCRTextAdapter(ModelAdapter):
             from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
             self._tok = AutoTokenizer.from_pretrained(self.text_model, trust_remote_code=True)
-            kwargs: Dict[str, Any] = {"device_map": "balanced", "trust_remote_code": True}
+            kwargs: Dict[str, Any] = {"device_map": _side_device(), "trust_remote_code": True}
             if self.load_in_4bit:
                 kwargs["quantization_config"] = BitsAndBytesConfig(
                     load_in_4bit=True, bnb_4bit_compute_dtype=gpu_dtype()

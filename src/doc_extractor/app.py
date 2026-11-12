@@ -146,7 +146,8 @@ def _bbox_to_pixels(bbox, w: int, h: int):
     return (int(x1 * w / 1000.0), int(y1 * h / 1000.0), int(x2 * w / 1000.0), int(y2 * h / 1000.0))
 
 
-MAX_PAGES = int(os.environ.get("DOC_MAX_PAGES", "5"))  # demo cap; every page up to this is read
+# Every page is read by default. DOC_MAX_PAGES=N is only an optional limit for quick test runs (0 = no limit).
+MAX_PAGES = int(os.environ.get("DOC_MAX_PAGES", "0"))
 
 
 def _classification_markdown(pages_info: List[Dict[str, Any]]) -> str:
@@ -296,7 +297,7 @@ def _process_core(
     engine_choice: str,
     steps: List[Dict[str, Any]],
 ):
-    """Reads every page (up to MAX_PAGES): classify each page, route it to the model for its category,
+    """Reads every page of the document: classify each page, route it to the model for its category,
     merge fields with page numbers (FR-CLS-005, FR-RTE-001, FR-ING-004).
 
     Yields (gallery_of_annotated_pages, status_text, json_output, classification_markdown, json_file_path).
@@ -332,7 +333,8 @@ def _process_core(
         if not page_items:
             page_items = [(1, Path(file_path), None)]
         total_pages = len(page_items)
-        page_items = page_items[:MAX_PAGES]
+        if MAX_PAGES > 0:
+            page_items = page_items[:MAX_PAGES]
         _step(steps, "split", state="done", detail=f"{total_pages} page image(s)" + (
             f", reading the first {len(page_items)}" if total_pages > len(page_items) else ""))
         split_gallery = [(_thumb(p), f"Page {n} (split)") for n, p, _ in page_items if p and Path(p).exists()]

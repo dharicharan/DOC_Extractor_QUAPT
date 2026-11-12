@@ -51,7 +51,7 @@ Set these with `%env` in cell 4, before `!python app.py`:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `DOC_MAX_PAGES` | 5 | How many pages a PDF reads. Longer files are flagged. |
+| `DOC_MAX_PAGES` | 0 (no limit) | Optional limit on pages read, for quick test runs. Every page is read by default. |
 | `DOC_MAX_IMAGE_PIXELS` | 1300000 | Size cap for the page image sent to the extraction model. Raise it on a bigger GPU. About 4200000 gives full 200 DPI. |
 | `DOC_CLASSIFY_MAX_PIXELS` | 500000 | Size of the image used for classification. |
 | `DOC_DEFAULT_MODEL` | Qwen/Qwen3-VL-4B-Instruct | The main vision model. Set to `Qwen/Qwen3-VL-8B-Instruct` on a 24 GB GPU. |

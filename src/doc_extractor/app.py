@@ -51,8 +51,8 @@ from doc_extractor.storage import LocalDiskStorage
 AUTO = "Auto-Detect"
 ENGINE_CHOICES = {
     "Follow routing table": None,
-    "GLM-OCR + Qwen2.5-7B text (experimental)": "ocr_text",
-    "GLM-OCR + Qwen3-4B-Instruct text (experimental)": "ocr_text_4b",
+    "GLM-OCR + Qwen3-4B-Instruct text (experimental)": "ocr_text",
+    "GLM-OCR + Qwen2.5-7B text (experimental, comparison)": "ocr_text_7b",
 }
 
 try:

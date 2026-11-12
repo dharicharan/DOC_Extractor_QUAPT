@@ -7,7 +7,7 @@ different kind of model without changing the app:
 - VLMAdapter:      a vision-language model that reads the page and returns schema JSON with boxes
                    (Qwen3-VL-8B, the default).
 - OCRTextAdapter:  an OCR model reads the page to text, then a text LLM of comparable size maps the
-                   text to the schema (for example GLM-OCR + Qwen2.5-7B-Instruct). The text LLM cannot see the
+                   text to the schema (for example GLM-OCR + Qwen3-4B-Instruct-2507). The text LLM cannot see the
                    page, so checkboxes and character grids should stay on the VLM route.
 
 OCRTextAdapter is UNTESTED against the real models: it follows the published model-card usage and
@@ -26,7 +26,7 @@ from doc_extractor.contracts_c import ExecutionMode, ExecutionProvenance
 logger = logging.getLogger("doc_extractor.adapters")
 
 DEFAULT_OCR_MODEL = "zai-org/GLM-OCR"
-DEFAULT_TEXT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # pure text, no thinking mode
+DEFAULT_TEXT_MODEL = "Qwen/Qwen3-4B-Instruct-2507"  # pure text, non-thinking only
 OCR_PROMPT = "Text Recognition:"
 
 

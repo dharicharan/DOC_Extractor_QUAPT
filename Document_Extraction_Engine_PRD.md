@@ -128,7 +128,7 @@ Product brochures and policy wordings from the outline are tracked as DOC-08 (v1
 | Unstructured | Free-layout printed material with no fixed field labels; the type varies widely | Brochures, pamphlets, menu cards, CASA leaflets, invitation cards, policy wordings, discharge summaries | DOC-03, DOC-08 |
 | Handwritten | Content that is predominantly handwritten | Doctor prescriptions | DOC-07 |
 
-A structured form can contain handwritten entries (for example a CASA form filled by hand). Category is chosen by the dominant content; the handwritten entries inside a structured form are handled by the structured route with handwriting flags (FR-PRS-006). Domain variation inside a category (loan onboarding vs claims vs credit card vs KYC) is handled by schema and fine-tuning (D11), not by a new category.
+**Hand-filled forms (v1.4 rule, 2026-11-13).** A form whose filled-in entries are handwritten is category **Handwritten**, even though its layout is a form. Handwritten pages route to the vision model (Qwen3-VL), which reads handwriting and returns boxes. **Structured** is reserved for forms whose entries are typed or printed, which route to the OCR route (GLM-OCR + text model). The GLM-OCR route is not used for handwriting, since its handwriting reads are unreliable and it returns no boxes.
 
 ### 3.2 Inputs, languages and output
 
@@ -326,7 +326,7 @@ Organised in pipeline order. Source column: `A` = Technical Approach document se
 | | | **[NEW]** | Directly localize and attend to tables, key-value blocks, signatures, and stamps in image space, grounding extracted fields to their precise visual pixel regions. | F6, GR-002 |
 | FR-PRS-005 | Optical confidence | **[OLD]** | Report an optical OCR confidence score in \[0, 1\] per recognized text block. | A §4.2 |
 | | | **[NEW]** | Compute calibrated confidence per field combining multimodal generation log-likelihoods, spatial grounding overlap, and deterministic validation rule outcomes. | A §4.2, M6 |
-| FR-PRS-006 | English handwriting | **Both** | The system SHOULD read English handwriting and flag struck-out or overwritten entries. Handwriting fields below threshold are routed to review (`review_required: true`). | F7 |
+| FR-PRS-006 | English handwriting | **Both** | The system SHOULD read English handwriting (hand-filled forms included, routed to the vision model per §3.1) and flag struck-out or overwritten entries. Handwriting fields below threshold are routed to review (`review_required: true`). | F7 |
 | FR-PRS-007 | Multilingual printed text | **Both** | The system SHOULD read Hindi, Telugu, Tamil and Malayalam printed text. Per-language CER reported on benchmark; a language ships only if CER meets M2. | F4 |
 
 ### 5.4 Extraction

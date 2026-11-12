@@ -105,7 +105,7 @@ Definitions:
 - structured: forms with labelled blanks or boxes to fill (KYC, CASA account opening DOC-01, insurance application DOC-02, loan DOC-04, credit card DOC-05, claim DOC-06).
 - unstructured: free-layout printed material with no fixed fields (brochures, pamphlets, menu cards, invitation cards, policy wordings DOC-08, discharge summaries DOC-03).
 - handwritten: the content is mostly handwriting, e.g. a doctor's prescription DOC-07.
-A structured form with some handwritten entries is still structured.
+If the filled-in entries on a form are handwritten, the category is HANDWRITTEN even though the layout is a form. Use STRUCTURED only when the filled-in entries are typed or printed. Handwritten routes to the vision model; structured digital pages route to the OCR text route.
 "language" is the dominant language of the text. Use null for subtype unless the category is unstructured.
 "rotation" is how many degrees CLOCKWISE the page must be turned so the text reads upright (0 if already upright, 180 if upside down)."""
 

@@ -40,6 +40,8 @@ logger = logging.getLogger("doc_extractor.extractor")
 # (about 1654 x 2339 = 3.9 MP) at full resolution; with sdpa attention this should fit a 16 GB T4.
 # Lower it (e.g. DOC_MAX_IMAGE_PIXELS=1300000) only if a page still runs out of memory.
 MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "4200000"))
+# Classification (category, language, rotation) does not need 200 DPI: a small image is far faster.
+CLASSIFY_MAX_PIXELS = int(os.environ.get("DOC_CLASSIFY_MAX_PIXELS", "500000"))
 
 
 def _flat_to_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -524,6 +526,7 @@ class SchemaGuidedExtractor:
             CLASSIFIER_SYSTEM_PROMPT,
             "Classify this document image. Return the JSON object only.",
             max_new_tokens=128,
+            max_pixels=CLASSIFY_MAX_PIXELS,
         )
         return self._parse_json_output(text)
 
@@ -539,6 +542,7 @@ class SchemaGuidedExtractor:
         system_prompt: str,
         user_text: str,
         max_new_tokens: int,
+        max_pixels: Optional[int] = None,
     ) -> str:
         model, processor = self._load_model()
         messages = [
@@ -546,7 +550,7 @@ class SchemaGuidedExtractor:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": load_capped_image(image_input)},
+                    {"type": "image", "image": load_capped_image(image_input, max_pixels or MAX_IMAGE_PIXELS)},
                     {"type": "text", "text": user_text},
                 ],
             },

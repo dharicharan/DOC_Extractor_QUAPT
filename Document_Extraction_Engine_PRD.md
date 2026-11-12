@@ -32,7 +32,7 @@ The original inputs disagreed in five places, resolved on 2026-10-29 (D1 to D5).
 | D3 | Accuracy bar | Field F1 > 92% (structured/semi), CER < 3%, WER < 6% | 95%+ key-field accuracy; STP "80% above" | **Two bars:** F1 ≥ 92% on all fields and ≥ 95% on schema-marked key fields for structured and semi-structured types. **STP targets are deferred** until the first paying customer defines them; the escape rule is fixed now: 0 wrong key fields in auto-approved documents (GR-027). Handwritten prescriptions always route to review below the confidence threshold. |
 | D4 | Latency | < 3.0 s/page on GPU | < 10 s/page | **p95 ≤ 3.0 s/page with local models on the recommended GPU profile; ≤ 10 s/page on CPU-only fallback.** Cloud-provider latency is reported, not gated. |
 | D5 | MVP scope | 7 types, but prototype on CASA + Discharge Summary first | 2–3 types across InsurTech, FinTech, Healthcare | **MVP = CASA Account Opening, Insurance Application, Discharge Summary** (one per domain). The other four types are schema-only additions in v1. |
-| D6 | **Extraction Core Architecture** | **[OLD] 2-Stage Decoupled Pipeline:** Stage 3 visual parser (PaddleOCR-VL-1.6 / GLM-OCR) converts page image to Markdown/HTML tables; Stage 4 local text LLM (Qwen2.5-7B-Instruct) extracts fields from markdown using regex/prompts. | Line-by-line regex parsing on OCR text strings; separate OCR bounding box index. | **[NEW] 1-Stage Multimodal Extraction Architecture:** Direct vision-to-JSON extraction powered by `Qwen3-VL-8B-Instruct` (non-thinking instruct VLM; ELO 1542, 66.7% win rate over GLM-OCR on OCR Arena) with `Qwen2.5-VL-7B-Instruct` as compatible baseline, returning structured JSON with inline `[ymin, xmin, ymax, xmax]` normalized bounding boxes, coupled with deterministic Python normalizers for financial/BFSI domain rules (ARC-002, ARC-005, FR-EXT-001, FR-VAL-001). Eliminates layout loss and fragile regex. |
+| D6 | **Extraction Core Architecture** | **[OLD] 2-Stage Decoupled Pipeline:** Stage 3 visual parser (PaddleOCR-VL-1.6 / GLM-OCR) converts page image to Markdown/HTML tables; Stage 4 local text LLM (Qwen2.5-7B-Instruct) extracts fields from markdown using regex/prompts. | Line-by-line regex parsing on OCR text strings; separate OCR bounding box index. | **[NEW] 1-Stage Multimodal Extraction Architecture:** Direct vision-to-JSON extraction powered by `Qwen3-VL-8B-Instruct` (non-thinking instruct VLM; ELO 1542, 66.7% win rate over GLM-OCR on OCR Arena) with `Qwen2.5-VL-7B-Instruct` as compatible baseline, returning structured JSON with inline `[ymin, xmin, ymax, xmax]` normalized bounding boxes, coupled with deterministic Python normalizers for financial/BFSI domain rules (ARC-002, ARC-005, FR-EXT-001, FR-VAL-001). Eliminates layout loss and fragile regex. **Superseded in part by D7/D14 (v1.4):** `Qwen3-VL-8B-Instruct` stays as the default baseline and fallback, and the engine evolves into a category-routed architecture that dispatches to specialist models. |
 
 ### 1.1 Changes in v1.4 (product-owner review, 2026-11-12)
 
@@ -47,6 +47,7 @@ The product owner reviewed the single-model approach and directed the following.
 | D11 | **Domain variation and training** | Fine-tuning only in v2. | Forms vary per product (loan onboarding, claims, credit card, KYC differ), so **training on synthetic plus real client scans is in scope from the demo phase** and accuracy is tracked per iteration (FR-TRN-001 to FR-TRN-004). |
 | D12 | **Scope boundary** | Extraction plus review plus connectors. | The current assignment focuses **only on document extraction**: its JSON output is the hand-off to any later pipeline (review, decisioning). |
 | D13 | **Demo UI** | Full screen set SCR-01 to SCR-10. | A **basic demo UI** for upload, category and type selection or auto-detection, classification result and JSON output is required first (Section 8.10, FR-DEMO-001 to FR-DEMO-006). |
+| D14 | **Router model and specialist dispatch** | Classification is rule-based and extraction is one model. | **One router model auto-detects the category (and language) from the page image, then dispatches to the specialist model for that category** (FR-RTE-005, FR-RTE-006). Candidates, to be confirmed by the evaluation workbook and benchmark, not decided: digital / printed documents, GLM-OCR (or PaddleOCR-VL) for reading plus a comparable-size text LLM such as Qwen3-8B for field mapping, with Qwen3-VL-8B as the fallback; handwritten, the highest-accuracy vision model that can be hosted (for example Qwen3-VL-32B or a fine-tuned Qwen3-VL-8B), always with review below threshold. For the demo the router is Qwen3-VL-8B-Instruct. |
 
 Two further inputs from the outline's answers are adopted as stated: pricing is per page, and launch languages are English, Hindi, Telugu, Tamil and Malayalam, with handwriting reading in English only at first. Malayalam is not covered by the approach document's model selection, so it is a validated-or-not gate in Section 14 rather than an assumption.
 
@@ -191,18 +192,19 @@ Page Image (200 DPI)
 Page Image (200 DPI from Module A Handoff)
        │
        ▼
-[Module B: Classification & Schema Binding]
-       │  • Fast RuleBasedClassifierAdapter resolves doc type (DOC-01, DOC-02, DOC-03)
-       │  • Binds target Pydantic schema class (e.g., CASASchema)
-       │  • Hands off clean preprocessed image path directly to Module C
+[Module B: Category & Document Routing (FR-CLS-005, FR-RTE-005)]
+       │  • Router model detects category: Structured, Unstructured, Handwritten
+       │  • Detects language and document type; rule-based and filename hints as fallback
+       │  • Binds target Pydantic schema where one exists (e.g., CASASchema)
+       │  • Hands the clean preprocessed image path to Module C with category and language
        ▼
-[Module C: 1-Stage Multimodal Extractor (SchemaGuidedExtractor)]
-       │  • Model: Qwen3-VL-8B-Instruct (or Qwen2.5-VL-7B-Instruct) via Hugging Face AutoProcessor
-       │  • Non-Thinking Instruct Mode: zero-latency immediate structured JSON output (no <think> loops)
-       │  • Direct image-to-JSON visual comprehension (no intermediate markdown serialization loss)
-       │  • Single-pass structured output with inline normalized bounding boxes [0-1000]:
-       │    "field_name": {"value": "extracted_string", "bbox": [ymin, xmin, ymax, xmax]}
-       │  • Robust JSON cleaning: re.sub strips markdown backticks (```json ... ```)
+[Module C: Routed Specialist Extractor (SchemaGuidedExtractor, FR-RTE-001 to FR-RTE-007)]
+       ├── Route A (Structured):   fine-tuned VLM; or GLM-OCR + text LLM for printed forms (candidates)
+       ├── Route B (Unstructured): general VLM; or GLM-OCR / PaddleOCR-VL + text LLM (candidates)
+       └── Route C (Handwritten):  highest-capacity VLM that can be hosted; review below threshold
+       Default fallback: Qwen3-VL-8B-Instruct (non-thinking, no <think> loops)
+       • Every route emits schema-structured JSON with inline [ymin, xmin, ymax, xmax] boxes on [0-1000]
+       • Robust JSON cleaning: re.sub strips markdown backticks (```json ... ```)
        ▼
 [Deterministic Python Normalization Layer (validation_rules.py)]
        │  • normalize_and_format(field_name, raw_value)
@@ -240,7 +242,7 @@ Page Image (200 DPI from Module A Handoff)
 | ID | Architectural requirement | Status & Specification | Pri |
 | --- | --- | --- | --- |
 | ARC-001 | Deployment boundary | All components SHALL run inside the deployment boundary (SaaS tenant environment or customer site); calls to external services SHALL go only to providers the policy allows (see GR-013, SEC-011). | P0 |
-| ARC-002 | **Pipeline & Extractor Decoupling** | **[OLD]** The parser and the extractor SHALL be separate services behind versioned interfaces so that either can be replaced by configuration (NFR-008).<br>**[NEW]** The engine SHALL execute extraction via a unified 1-stage multimodal visual extractor (`Qwen3-VL-8B-Instruct` or `Qwen2.5-VL-7B-Instruct`) that emits schema-structured JSON and normalized bounding boxes directly from preprocessed page images, followed by a deterministic post-extraction Python normalization engine. The extractor interface SHALL abstract model weights behind `SchemaGuidedExtractor`. | P0 |
+| ARC-002 | **Pipeline & Extractor Decoupling** | **[OLD]** The parser and the extractor SHALL be separate services behind versioned interfaces so that either can be replaced by configuration (NFR-008).<br>**[NEW]** The engine SHALL execute extraction via category-routed specialist models behind a unified `SchemaGuidedExtractor` interface (FR-RTE-001 to FR-RTE-007), with `Qwen3-VL-8B-Instruct` as the default fallback, followed by the deterministic Python normalization engine. Model weights SHALL be abstracted behind the interface so a route can change by configuration. | P0 |
 | ARC-003 | Queue and statelessness | Stages SHALL communicate through a durable queue; workers SHALL be stateless, and each stage SHALL store its output under the run ID. | P0 |
 | ARC-004 | Local model isolation | Local model serving SHALL run in network-isolated containers with access only to the stage's input and output (GR-007). | P0 |
 | ARC-005 | **Reference Technology Stack** | **[OLD]** The reference stack from the approach document: Python, pypdfium2, OpenCV, Pydantic, instructor or Outlines, Ollama or vLLM, PaddleOCR-VL-1.6 or GLM-OCR, quantised Qwen2.5-7B-Instruct.<br>**[NEW]** The modern 1-stage multimodal stack: Python 3.10+, `transformers>=4.49.0`, `accelerate>=0.26.0`, `bitsandbytes>=0.43.0`, `qwen-vl-utils>=0.0.8`, `torch`, `pypdfium2`, `OpenCV`, `Pydantic v2`, with deterministic BFSI normalizers. Local weights load via `Qwen3-VL-8B-Instruct` or `Qwen2.5-VL-7B-Instruct` with optional 4-bit/8-bit quantization. | P0 |
@@ -284,6 +286,9 @@ Organised in pipeline order. Source column: `A` = Technical Approach document se
 | FR-RTE-002 | The routing table SHALL be configuration, not code, and SHALL be versioned. English is the default language route; other languages route per the per-language gate (FR-PRS-007). | P0 | Changing the table changes the model used without a code release. | D7, D10 |
 | FR-RTE-003 | WHEN no category-specific model is configured or the routed model fails to load, THEN the system SHALL fall back to the default model (`Qwen3-VL-8B-Instruct`) and record `fallback_occurred: true` with the reason. | P0 | Given an unavailable model, Then the default model runs and the envelope shows the fallback. | ARC-007 |
 | FR-RTE-004 | Every routed model SHALL implement the same `SchemaGuidedExtractor` interface and output contract (§6.3), so the envelope is identical regardless of route. | P0 | The same schema validation suite passes for every route. | ARC-002 |
+| FR-RTE-005 | A single router model SHALL auto-detect category, document type and language from the page image before any specialist runs, and SHALL fall back to rule-based and filename hints if the router fails. The user MAY override any detected value. | P0 | Given an unlabelled upload, Then category, type and language are returned with confidence and a source (`auto` or `user`) before extraction starts. | D14 |
+| FR-RTE-006 | The system SHALL support specialist models of different kinds (VLM that returns schema JSON, OCR model that returns text, line-level handwriting model) behind one adapter interface. An OCR-only specialist (for example GLM-OCR) SHALL be followed by a **text LLM of comparable size** (for example Qwen3-8B or Qwen2.5-7B-Instruct; a text model, not a VLM, since it only reads the OCR text) that maps the text to the schema, so every route emits the §6.3 envelope. Evidence boxes SHALL come from the OCR model's own block or word coordinates; a value with no matching box is nulled and flagged `EVIDENCE_MISSING` (GR-002). Because the text model cannot see the page, checkboxes and character grids SHALL stay on the VLM route unless the OCR model reports them (FR-PRS-002, FR-PRS-003). | P0 | Each route passes the same envelope validation suite; the envelope records the router model and the specialist model separately. | D14, FR-RTE-004 |
+| FR-RTE-007 | Digital-document and handwritten routes SHALL be compared against the default model on the same labelled set before being enabled; a specialist is enabled only if it meets or beats the default on field accuracy and cost per page (workbook). | P0 | A comparison table per category exists and the routing table names the winner. | D9, D14 |
 
 ### 5.2.2 Model and cost evaluation (v1.4)
 
@@ -293,6 +298,8 @@ Organised in pipeline order. Source column: `A` = Technical Approach document se
 | FR-EVL-002 | The workbook SHALL give cost per page for each model, for both self-hosted (GPU hours, GPU type, throughput pages/hour) and API providers. GPU usage SHALL be included because the engine is hosted, not only API cost. | P0 | Every candidate row has a per-page cost and a GPU profile, with stated assumptions. | D9, NFR-016 |
 | FR-EVL-003 | The workbook SHALL state, per category, the recommended model and the runner-up, with measured accuracy on a sample set where available and clearly marked "vendor claim" where not (R1). | P0 | No accuracy figure is shown without its source. | D9, R1 |
 | FR-EVL-004 | The workbook SHALL cover domain variation (loan onboarding, claims, credit card, KYC) and state which need fine-tuning vs schema-only. | P1 | One row per domain with a fine-tune/no-fine-tune call and the reason. | D9, D11 |
+
+**Deliverable status (2026-11-12):** first draft at `docs/model_cost_evaluation.xlsx` (sheets: Assumptions, Models, By Category, Stack & Hosting, Training Plan). All throughput, VRAM and GPU price figures are estimates and accuracy is unmeasured until the G0 benchmark. The earlier team approach (a Qwen model for handwritten and GLM-OCR for digital forms) is included as candidates, not as decisions.
 
 ### 5.2.3 Training and accuracy improvement (v1.4)
 
@@ -956,7 +963,7 @@ Performance targets are measured with local models on hardware profile P2 in 12.
 | NFR-004 | Availability | Service availability for a single-site deployment; high-availability option documented. | 99.5% monthly (HA: 99.9%) | P0 |
 | NFR-005 | Scalability | Add worker nodes to scale throughput linearly up to 4 nodes; queue absorbs month-end bursts. | ≥ 85% scaling efficiency | P1 |
 | NFR-006 | Reliability | Retries and idempotency on all mutating calls; at-least-once processing with no lost documents on node failure. | 0 lost documents in failure-injection test | P0 |
-| NFR-007 | **Model footprint** | **[OLD]** Parser stage VRAM < 2 GB; extractor stage VRAM within 8 to 16 GB (two separate models loaded simultaneously).<br>**[NEW]** Single unified multimodal model (`Qwen3-VL-8B-Instruct` or `Qwen2.5-VL-7B-Instruct`): ~16 GB VRAM unquantized (bfloat16), or ~6 to 8 GB VRAM with 4-bit / 8-bit quantization (`bitsandbytes`), comfortably fitting single 24 GB GPU instances (L4, A10, RTX 3090/4090). | Single GPU footprint ≤ 16 GB | P0 |
+| NFR-007 | **Model footprint** | **[OLD]** Parser stage VRAM < 2 GB; extractor stage VRAM within 8 to 16 GB (two separate models loaded simultaneously).<br>**[NEW]** Default multimodal model (`Qwen3-VL-8B-Instruct` or `Qwen2.5-VL-7B-Instruct`): ~16 GB VRAM unquantized (bfloat16), or ~6 to 8 GB VRAM with 4-bit / 8-bit quantization (`bitsandbytes`), comfortably fitting single 24 GB GPU instances (L4, A10, RTX 3090/4090). **Multi-model serving (v1.4):** where specialist models are deployed (for example GLM-OCR plus a text LLM, or a larger handwriting model), they SHALL either be co-hosted within available VRAM (for example 24 GB or 48 GB GPUs, with usable VRAM headroom) or served as modular worker endpoints, as sized in the model evaluation workbook (`FR-EVL-002`, `docs/model_cost_evaluation.xlsx`). | Default model ≤ 16 GB; with multiple specialists, total footprint fits the chosen GPU profile (see workbook) | P0 |
 | NFR-008 | **Model flexibility** | **[OLD]** Parser and extractor sit behind separate interfaces.<br>**[NEW]** Unified `SchemaGuidedExtractor` multimodal interface; swapping model checkpoints requires only configuration and regression run, without multi-stage pipeline coupling. | Swap demonstrated for multimodal backbone | P0 |
 | NFR-009 | Deployment | One container build deploys to SaaS, private cloud or VPC, and on-premise with Helm or Compose; offline installation bundle. | Install with no internet in under 1 day | P0 |
 | NFR-010 | Observability | Dashboards for accuracy, STP, confidence distribution, error patterns, latency, GPU use and cost per page; no PII. | All listed panels live | P1 |

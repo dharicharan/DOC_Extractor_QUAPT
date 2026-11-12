@@ -134,9 +134,12 @@ def get_routed_extractor() -> RoutedExtractor:
 
 
 def _bbox_to_pixels(bbox, w: int, h: int):
-    """Qwen bbox [ymin, xmin, ymax, xmax] on 0-1000 -> (x0, y0, x1, y1) pixels. Scaled once, here only."""
-    ymin, xmin, ymax, xmax = bbox
-    return (int(xmin * w / 1000.0), int(ymin * h / 1000.0), int(xmax * w / 1000.0), int(ymax * h / 1000.0))
+    """Qwen3-VL bbox [x1, y1, x2, y2] on 0-1000 (its native format) -> (x0, y0, x1, y1) pixels.
+    Scaled once, here only. Corners are sorted and clipped so a reversed or out-of-range box still draws."""
+    x1, y1, x2, y2 = (float(c) for c in bbox)
+    x1, x2 = sorted((max(0.0, min(1000.0, x1)), max(0.0, min(1000.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1000.0, y1)), max(0.0, min(1000.0, y2))))
+    return (int(x1 * w / 1000.0), int(y1 * h / 1000.0), int(x2 * w / 1000.0), int(y2 * h / 1000.0))
 
 
 MAX_PAGES = int(os.environ.get("DOC_MAX_PAGES", "5"))  # demo cap; every page up to this is read
@@ -304,8 +307,8 @@ def process_document(
                 validation = "not_applicable"
                 if v is None:
                     null_reason = "absent"
-                elif schema_cls is not None:
-                    # FR-VAL-001/002: deterministic normalisation and format checks (schema'd fields only)
+                elif schema_cls is not None and not fpath.startswith("other."):
+                    # FR-VAL-001/002 (schema fields only; free-form other.* labels are not normalised): deterministic normalisation and format checks (schema'd fields only)
                     v, err = normalize_and_format(fpath, v)
                     validation = "failed" if err else "passed"
                     if err:

@@ -132,7 +132,7 @@ def heuristic_classify(filename: str, rule_type: Optional[str] = None) -> Dict[s
 
 _COMMON_RULES = """CRITICAL RULES:
 1. TRANSCRIBE ONLY WHAT IS VISIBLE. Never invent or copy placeholder/example values. If a value is absent or illegible set "value": null and "bbox": null.
-2. "bbox" is [ymin, xmin, ymax, xmax] on a 0-1000 normalized scale around the exact text.
+2. "bbox" is [x1, y1, x2, y2] (left, top, right, bottom) on a 0-1000 normalized scale around the exact text.
 3. Return raw valid JSON only. No markdown fences."""
 
 
@@ -164,7 +164,7 @@ TASK:
 {task}
 
 OUTPUT FORMAT:
-{{"<snake_case_field_name>": {{"value": "<text, number, list or null>", "bbox": [ymin, xmin, ymax, xmax]}}, ...}}
+{{"<snake_case_field_name>": {{"value": "<text, number, list or null>", "bbox": [x1, y1, x2, y2]}}, ...}}
 
 {_COMMON_RULES}
 """

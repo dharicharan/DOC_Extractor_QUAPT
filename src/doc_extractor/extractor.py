@@ -657,7 +657,7 @@ class SchemaGuidedExtractor:
         field_lines: List[str] = []
         for field_name, desc in leaf_fields:
             field_lines.append(
-                f'  "{field_name}": {{"value": "<extracted_string_or_null>", "bbox": [ymin, xmin, ymax, xmax]}}  # {desc}'
+                f'  "{field_name}": {{"value": "<extracted_string_or_null>", "bbox": [x1, y1, x2, y2]}}  # {desc}'
             )
         fields_json = ",\n".join(field_lines)
 
@@ -673,8 +673,12 @@ CRITICAL RULES:
 1. TRANSCRIBE ACTUAL INK: Read the real handwritten and printed letters on the page (character boxes, handwriting, checkboxes). Do NOT invent, assume, or hallucinate placeholder names (e.g. NEVER output dummy names like "GOPAL SINGH" or dummy PANs like "ABCD12345C").
 2. CHARACTER BOXES: For names, PAN, Aadhaar, read the individual letters written in the character grid boxes carefully (e.g. R-U-P-E-S-H -> RUPESH).
 3. ABSENT FIELDS: If a field is not filled or not present on this document, set "value": null and "bbox": null.
-4. BOUNDING BOXES: "bbox" must be [ymin, xmin, ymax, xmax] in normalized 0-1000 scale surrounding the exact text or checked box.
-5. STRICT FORMAT: Return raw valid JSON only. No markdown fences.
+4. BOUNDING BOXES: "bbox" must be [x1, y1, x2, y2] (left, top, right, bottom) in normalized 0-1000 scale tightly surrounding the exact handwritten/printed value (not the label) or the ticked box.
+5. RETURN EVERY KEY listed above, even when the value is null.
+6. NAMES SPLIT INTO ROWS: if the form has separate First / Middle / Last name rows, fill first_name, middle_name and last_name, and set full_name to all three joined with single spaces.
+7. CHECKBOXES / TICKS: a ticked or marked option is the value (e.g. account_type "SAVINGS" if the Savings box is ticked); for boolean fields use true if ticked, false if clearly unticked, null if not on the form.
+8. OTHER FILLED FIELDS: also add every other filled-in field on the page that is not in the list above, as "other.<snake_case_label>": {{"value": ..., "bbox": [x1, y1, x2, y2]}}.
+9. STRICT FORMAT: Return raw valid JSON only. No markdown fences.
 """
 
     def _extract_heuristic(

@@ -14,7 +14,14 @@ from pydantic import BaseModel, Field
 class ApplicantDetails(BaseModel):
     full_name: Optional[str] = Field(
         default=None,
-        description="Applicant full name, merged from character boxes, uppercase as printed",
+        description="Applicant full name, merged from character boxes, uppercase as printed (first + middle + last)",
+    )
+    first_name: Optional[str] = Field(default=None, description="First name row, if the form splits the name")
+    middle_name: Optional[str] = Field(default=None, description="Middle name row, if the form splits the name")
+    last_name: Optional[str] = Field(default=None, description="Last name / surname row, if the form splits the name")
+    aadhaar_number: Optional[str] = Field(default=None, description="12-digit Aadhaar number, digits only")
+    gross_annual_income: Optional[str] = Field(
+        default=None, description="Ticked gross annual income range, as printed (e.g. '1-5 Lakhs')"
     )
     pan_card_number: Optional[str] = Field(
         default=None,
@@ -64,10 +71,23 @@ class AccountDetails(BaseModel):
     )
 
 
+class BankDetails(BaseModel):
+    account_number: Optional[str] = Field(default=None, description="Bank account number, kept as a string with leading zeros")
+    bank_name: Optional[str] = Field(default=None, description="Bank name as written")
+    branch_address: Optional[str] = Field(default=None, description="Branch name / address as written")
+    city: Optional[str] = Field(default=None, description="City / town / village")
+    state: Optional[str] = Field(default=None, description="State")
+    pin_code: Optional[str] = Field(default=None, description="6-digit PIN code")
+    country: Optional[str] = Field(default=None, description="Country")
+    ifsc_code: Optional[str] = Field(default=None, description="11-character IFSC code")
+    micr_code: Optional[str] = Field(default=None, description="9-digit MICR code")
+
+
 class CASASchema(BaseModel):
-    """DOC-01: CASA Account Opening Form extraction target schema."""
+    """DOC-01: CASA / account opening form extraction target schema."""
     applicant: ApplicantDetails = Field(default_factory=ApplicantDetails)
     account_details: AccountDetails = Field(default_factory=AccountDetails)
+    bank_details: BankDetails = Field(default_factory=BankDetails)
 
 
 # ============================================================================

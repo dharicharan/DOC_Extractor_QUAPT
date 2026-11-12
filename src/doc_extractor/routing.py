@@ -52,7 +52,9 @@ DEFAULT_ROUTING_TABLE: Dict[str, Any] = {
     # {"adapter": "ocr_text", "ocr_model": "...", "text_model": "..."}.
     # alt_engines are the specialists the demo can switch to for comparison (FR-RTE-007).
     "alt_engines": {
-        "ocr_text": {"adapter": "ocr_text", "ocr_model": "zai-org/GLM-OCR", "text_model": "Qwen/Qwen3-8B"},
+        # text step must be a pure text, non-thinking model (no VLM, no thinking mode)
+        "ocr_text": {"adapter": "ocr_text", "ocr_model": "zai-org/GLM-OCR", "text_model": "Qwen/Qwen2.5-7B-Instruct"},
+        "ocr_text_4b": {"adapter": "ocr_text", "ocr_model": "zai-org/GLM-OCR", "text_model": "Qwen/Qwen3-4B-Instruct-2507"},
     },
 }
 

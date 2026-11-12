@@ -49,7 +49,11 @@ from doc_extractor.routing import (
 from doc_extractor.storage import LocalDiskStorage
 
 AUTO = "Auto-Detect"
-ENGINE_CHOICES = {"Follow routing table": None, "GLM-OCR + text LLM (experimental)": "ocr_text"}
+ENGINE_CHOICES = {
+    "Follow routing table": None,
+    "GLM-OCR + Qwen2.5-7B text (experimental)": "ocr_text",
+    "GLM-OCR + Qwen3-4B-Instruct text (experimental)": "ocr_text_4b",
+}
 
 try:
     import gradio as gr

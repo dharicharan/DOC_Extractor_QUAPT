@@ -184,24 +184,46 @@ class RoutedExtractor:
         self._extractor_kwargs = extractor_kwargs
         self._cache: Dict[str, Any] = {}
 
-    def get_extractor(self, model_name: str):
+    def get_extractor(self, model_name: str, device: Optional[str] = None):
         from doc_extractor.extractor import SchemaGuidedExtractor
 
         if model_name not in self._cache:
-            self._cache[model_name] = SchemaGuidedExtractor(
-                model_name=model_name, use_llm=True, **self._extractor_kwargs
-            )
+            kwargs = dict(self._extractor_kwargs)
+            if device:
+                kwargs["device"] = device
+            self._cache[model_name] = SchemaGuidedExtractor(model_name=model_name, use_llm=True, **kwargs)
         return self._cache[model_name]
+
+    @property
+    def router_model(self) -> str:
+        """Model that classifies the document. DOC_ROUTER_MODEL (e.g. Qwen/Qwen3-VL-4B-Instruct) or the
+        table's "router_model" picks a smaller, faster router; default is the default extractor."""
+        return (os.environ.get("DOC_ROUTER_MODEL") or self.table.get("router_model")
+                or self.table.get("default_model", DEFAULT_MODEL))
+
+    def get_router(self):
+        default = self.table.get("default_model", DEFAULT_MODEL)
+        if self.router_model == default:
+            return self.get_extractor(default)
+        device = None
+        try:  # a separate router goes on the second GPU when there is one
+            import torch
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                device = "cuda:1"
+        except Exception:
+            pass
+        return self.get_extractor(self.router_model, device=device)
 
     def classify(self, image_path: str, filename: str, rule_type: Optional[str] = None) -> Dict[str, Any]:
         """VLM classification with heuristic fallback. Always returns a dict with a valid category."""
         try:
-            result = self.get_extractor(self.table.get("default_model", DEFAULT_MODEL)).classify_page_image(image_path)
+            result = self.get_router().classify_page_image(image_path)
             cat = str(result.get("category", "")).lower()
             if cat not in {c.value for c in DocumentCategory}:
                 raise ValueError(f"unrecognised category {cat!r}")
             result["category"] = cat
             result["method"] = "vlm"
+            result["router_model"] = self.router_model
             return result
         except Exception as exc:  # classification must never block the demo
             logger.warning("VLM classification failed, using heuristic: %s", exc)

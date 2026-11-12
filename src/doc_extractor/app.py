@@ -215,6 +215,7 @@ def _resolve_page(
         "confidence": 1.0 if user_cat else auto.get("confidence", 0.0),
         "method": "user" if user_cat else auto.get("method", "-"),
         "rotation": _safe_rotation(auto.get("rotation")),
+        "router_model": auto.get("router_model"),
     }
 
 
@@ -366,7 +367,8 @@ def _process_core(
         yield (split_gallery or None, "Classifying the document from page 1...", "", "", None)
         doc_info = _resolve_page(page_items[0][1], claimed_name, rule_type, choices, 1)
         _step(steps, "cls", state="done",
-              detail=f"{doc_info['category']} · {doc_info['document_type']} · {doc_info['language']} · {doc_info['category_source']}")
+              detail=f"{doc_info['category']} · {doc_info['document_type']} · {doc_info['language']} · {doc_info['category_source']}"
+                     + (f" · {doc_info['router_model'].split('/')[-1]}" if doc_info.get("router_model") else ""))
 
         rotation = doc_info.get("rotation", 0)
         if rotation:
@@ -485,7 +487,7 @@ def _process_core(
             "run": {
                 "run_id": payload_a.run_id,
                 "model_versions": {
-                    "router": DEFAULT_MODEL if first.get("method") == "vlm" else first.get("method"),
+                    "router": first.get("router_model") or first.get("method"),
                     "specialist": ", ".join(specialists),
                     "normalizer": "deterministic-v1",
                 },
@@ -568,6 +570,16 @@ if __name__ == "__main__":
     if gr is None:
         print("Gradio is not installed. Run: pip install gradio")
     else:
+        if os.environ.get("DOC_PRELOAD", "1") == "1":
+            # Load the models before the UI starts so the first click is not slowed by model loading
+            try:
+                _r = get_routed_extractor()
+                print("Preloading models (set DOC_PRELOAD=0 to skip)...")
+                _r.get_extractor(_r.table.get("default_model", DEFAULT_MODEL))._load_model()
+                _r.get_router()._load_model()
+                print("Models loaded.")
+            except Exception as _e:  # the app still starts; models load on first use
+                print(f"Preload skipped: {_e}")
         demo = create_demo()
         # In Kaggle or remote server, share=True generates a public gradio.live URL
         share_mode = os.environ.get("GRADIO_SHARE", "True").lower() == "true"

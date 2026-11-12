@@ -1,8 +1,8 @@
 # Document Extraction Engine: Product Requirements Document (PRD)
 ## Product Requirements Document for Spec-Driven Development
 
-**Version:** 1.3 (Architecture Evolution: 1-Stage Multimodal Extraction with Qwen3-VL-8B-Instruct / Qwen2.5-VL; aligned to the ICXBee PRD and mockup conventions)  
-**Date:** 2026-11-07  
+**Version:** 1.4 (Adds category-based model routing: structured / unstructured / handwritten, language dimension, model-and-cost evaluation, training-data strategy and a basic demo upload UI; builds on v1.3 1-Stage Multimodal Extraction with Qwen3-VL-8B-Instruct / Qwen2.5-VL)  
+**Date:** 2026-11-12  
 **Author:** Praveen (Updated for 1-Stage Multimodal Architecture)  
 **Scope:** Schema-driven extraction of 7 BFSI and healthcare document types into validated, evidence-grounded JSON; SaaS (AWS Mumbai) and customer-controlled deployments from one build  
 **Flows:** Upload and intake, Document tracking, Review (queue and workbench), Schema authoring and approval, Results and export, Developer console, Audit, Security and policy, Operations dashboard  
@@ -17,7 +17,7 @@
 > where neither the source documents nor the ICXBee PRDs give an answer; each is tracked in 15.6.  
 > **Architecture Evolution Notation:** Throughout this document, requirements and specifications undergoing evolution from the initial Technical Approach to the modern 1-Stage Multimodal Engine are labeled with **[OLD]** (Legacy 2-stage decoupled pipeline with OCR and text LLM) and **[NEW]** (1-Stage Multimodal visual extraction with non-thinking `Qwen3-VL-8B-Instruct` / `Qwen2.5-VL-7B-Instruct` and deterministic Python normalization) so differences are unambiguous.
 
-Oct 28, 2026 · @Praveen (original draft v1.0) · updated 2026-10-29 (v1.1) · updated 2026-11-06 (v1.2) · updated 2026-11-07 (v1.3: Qwen3-VL-8B-Instruct Adoption)
+Oct 28, 2026 · @Praveen (original draft v1.0) · updated 2026-10-29 (v1.1) · updated 2026-11-06 (v1.2) · updated 2026-11-07 (v1.3: Qwen3-VL-8B-Instruct Adoption) · updated 2026-11-12 (v1.4: category-based model routing, model/cost evaluation, training strategy, demo UI)
 
 This PRD defines a schema-driven engine, deployable as SaaS or on-premise, that turns scanned BFSI and healthcare documents into validated, evidence-grounded JSON, written so each requirement can be built and tested as a spec. It merges the Technical Approach document (architecture, models, 7 document types) with the Product Requirements Outline (personas, F1–F21, roadmap), incorporating the architectural transition from legacy two-stage OCR+LLM text parsing to direct single-stage multimodal visual extraction with deterministic Python normalization, and adds mock-screen, guardrail, security and NIST CSF 2.0 requirements.
 
@@ -33,6 +33,20 @@ The original inputs disagreed in five places, resolved on 2026-10-29 (D1 to D5).
 | D4 | Latency | < 3.0 s/page on GPU | < 10 s/page | **p95 ≤ 3.0 s/page with local models on the recommended GPU profile; ≤ 10 s/page on CPU-only fallback.** Cloud-provider latency is reported, not gated. |
 | D5 | MVP scope | 7 types, but prototype on CASA + Discharge Summary first | 2–3 types across InsurTech, FinTech, Healthcare | **MVP = CASA Account Opening, Insurance Application, Discharge Summary** (one per domain). The other four types are schema-only additions in v1. |
 | D6 | **Extraction Core Architecture** | **[OLD] 2-Stage Decoupled Pipeline:** Stage 3 visual parser (PaddleOCR-VL-1.6 / GLM-OCR) converts page image to Markdown/HTML tables; Stage 4 local text LLM (Qwen2.5-7B-Instruct) extracts fields from markdown using regex/prompts. | Line-by-line regex parsing on OCR text strings; separate OCR bounding box index. | **[NEW] 1-Stage Multimodal Extraction Architecture:** Direct vision-to-JSON extraction powered by `Qwen3-VL-8B-Instruct` (non-thinking instruct VLM; ELO 1542, 66.7% win rate over GLM-OCR on OCR Arena) with `Qwen2.5-VL-7B-Instruct` as compatible baseline, returning structured JSON with inline `[ymin, xmin, ymax, xmax]` normalized bounding boxes, coupled with deterministic Python normalizers for financial/BFSI domain rules (ARC-002, ARC-005, FR-EXT-001, FR-VAL-001). Eliminates layout loss and fragile regex. |
+
+### 1.1 Changes in v1.4 (product-owner review, 2026-11-12)
+
+The product owner reviewed the single-model approach and directed the following. These supersede any statement elsewhere in this PRD that implies one model serves every document.
+
+| # | Area | v1.3 position | v1.4 decision |
+| --- | --- | --- | --- |
+| D7 | **Model strategy** | One model (`Qwen3-VL-8B-Instruct`) for every document. | **No single model does all document scanning.** The engine first identifies the document **category** (structured, unstructured or handwritten), then routes to the model best suited to that category (FR-CLS-005, FR-RTE-001 to FR-RTE-004). Qwen3-VL-8B remains the default and baseline until the evaluation in D9 selects otherwise. |
+| D8 | **Document categories** | Category appears only as a column in 3.1. | Three categories are first-class routing inputs: **Structured** (forms with labelled blanks: name, age, fill-in-the-blank, KYC, loan, claim forms), **Unstructured** (brochures, pamphlets, menu cards, CASA leaflets, invitation cards, policy wordings), **Handwritten** (doctor prescriptions, handwritten forms). The PO asked to be told if a category is missing; this list is the open point for confirmation (OQ-DOCX-20). |
+| D9 | **Model and cost evaluation** | Vendor benchmark figures only (R1). | **Deliverable before further build:** an Excel workbook that, per category (and per language), names the recommended model, its pre-training data, fine-tuning options, per-page cost and GPU/hosting cost (FR-EVL-001 to FR-EVL-004). |
+| D10 | **Language** | Launch languages listed (3.2) but not a routing input. | Language is the second routing dimension after category. Planning baseline: about **80% of clients are English**; other languages follow the per-language gate (FR-PRS-007, FR-RTE-002). |
+| D11 | **Domain variation and training** | Fine-tuning only in v2. | Forms vary per product (loan onboarding, claims, credit card, KYC differ), so **training on synthetic plus real client scans is in scope from the demo phase** and accuracy is tracked per iteration (FR-TRN-001 to FR-TRN-004). |
+| D12 | **Scope boundary** | Extraction plus review plus connectors. | The current assignment focuses **only on document extraction**: its JSON output is the hand-off to any later pipeline (review, decisioning). |
+| D13 | **Demo UI** | Full screen set SCR-01 to SCR-10. | A **basic demo UI** for upload, category and type selection or auto-detection, classification result and JSON output is required first (Section 8.10, FR-DEMO-001 to FR-DEMO-006). |
 
 Two further inputs from the outline's answers are adopted as stated: pricing is per page, and launch languages are English, Hindi, Telugu, Tamil and Malayalam, with handwriting reading in English only at first. Malayalam is not covered by the approach document's model selection, so it is a validated-or-not gate in Section 14 rather than an assumption.
 
@@ -104,6 +118,16 @@ Seven types in two domains. Complexity follows the approach document's matrix: s
 | DOC-07 | Doctor's Prescription | Healthcare | Unstructured | v1 | Cursive handwriting, shorthand (OD, BD, TDS, SOS), ambiguous drug names |
 
 Product brochures and policy wordings from the outline are tracked as DOC-08 (v1, fact extraction from unstructured text) and are not in the launch seven.
+
+**Document categories (v1.4, D8).** Routing uses three categories, independent of the Doc ID above:
+
+| Category | Definition | Examples | Typical Doc IDs |
+| --- | --- | --- | --- |
+| Structured | Forms with labelled fields and fill-in-the-blank rows; printed or handwritten entries in fixed positions | KYC, CASA, loan, credit card, claim forms | DOC-01, 02, 04, 05, 06 |
+| Unstructured | Free-layout printed material with no fixed field labels; the type varies widely | Brochures, pamphlets, menu cards, CASA leaflets, invitation cards, policy wordings, discharge summaries | DOC-03, DOC-08 |
+| Handwritten | Content that is predominantly handwritten | Doctor prescriptions | DOC-07 |
+
+A structured form can contain handwritten entries (for example a CASA form filled by hand). Category is chosen by the dominant content; the handwritten entries inside a structured form are handled by the structured route with handwriting flags (FR-PRS-006). Domain variation inside a category (loan onboarding vs claims vs credit card vs KYC) is handled by schema and fine-tuning (D11), not by a new category.
 
 ### 3.2 Inputs, languages and output
 
@@ -248,6 +272,36 @@ Organised in pipeline order. Source column: `A` = Technical Approach document se
 | FR-CLS-002 | IF classification confidence is below the tenant threshold OR no schema matches, THEN the system SHALL set type `UNKNOWN` and route the document to review; it SHALL NOT run extraction. | P0 | Given an unrelated utility bill, Then type is `UNKNOWN`, no extraction output exists, a review task is created. | F5, GR-004 |
 | FR-CLS-003 | WHEN a type is resolved, the system SHALL bind the current approved version of its schema and record that version on the document. | P0 | Output envelope contains `schema_id` and `schema_version` matching the approved version at processing time. | A §3 stage 2 |
 | FR-CLS-004 | The reviewer SHALL be able to override the document type, which re-runs extraction with the chosen schema. | P0 | Given an override, Then a new extraction run is created and the old one is retained in history. | F16 |
+| FR-CLS-005 | The system SHALL first classify each document into a **category** (`structured`, `unstructured`, `handwritten`) with a confidence in \[0, 1\], and only then resolve the document type within that category. The user MAY supply the category and type manually, which skips auto-detection. | P0 | Given a CASA form, a brochure and a prescription, Then categories are structured, unstructured and handwritten respectively; category accuracy ≥ 95% on the benchmark (target to confirm). Given a manual selection, Then it is recorded as `category_source: "user"`. | D7, D8 |
+| FR-CLS-006 | For unstructured documents the system SHALL accept an open document sub-type (brochure, pamphlet, menu card, CASA leaflet, invitation card, other) and SHALL NOT reject a document solely because its sub-type has no pre-defined schema; it SHALL fall back to a generic key-fact schema. | P1 | Given a menu card, Then a generic extraction result with null-by-default is produced and sub-type is recorded. | D8 |
+| FR-CLS-007 | The system SHALL detect the dominant language of the document and record it with a confidence. | P0 | Given English and Hindi samples, Then `language` is `en` and `hi` with confidence recorded. | D10 |
+
+### 5.2.1 Model routing (v1.4)
+
+| ID | Requirement | Pri | Acceptance criteria | Source |
+| --- | --- | --- | --- | --- |
+| FR-RTE-001 | The system SHALL select the extraction model from a routing table keyed by (category, language, domain) and SHALL record the selected model in the run provenance. | P0 | Given a handwritten English prescription, Then the handwritten-route model is used and `run.model_versions.extractor` shows it. | D7 |
+| FR-RTE-002 | The routing table SHALL be configuration, not code, and SHALL be versioned. English is the default language route; other languages route per the per-language gate (FR-PRS-007). | P0 | Changing the table changes the model used without a code release. | D7, D10 |
+| FR-RTE-003 | WHEN no category-specific model is configured or the routed model fails to load, THEN the system SHALL fall back to the default model (`Qwen3-VL-8B-Instruct`) and record `fallback_occurred: true` with the reason. | P0 | Given an unavailable model, Then the default model runs and the envelope shows the fallback. | ARC-007 |
+| FR-RTE-004 | Every routed model SHALL implement the same `SchemaGuidedExtractor` interface and output contract (§6.3), so the envelope is identical regardless of route. | P0 | The same schema validation suite passes for every route. | ARC-002 |
+
+### 5.2.2 Model and cost evaluation (v1.4)
+
+| ID | Requirement | Pri | Acceptance criteria | Source |
+| --- | --- | --- | --- | --- |
+| FR-EVL-001 | Deliver an Excel workbook with one sheet per category (structured, unstructured, handwritten) and a language sheet. Each row is a candidate model with: recommended-for (category, language, domain), pre-training data and known strengths, fine-tuning options (LoRA/QLoRA, full), licence, parameter size and VRAM needed. | P0 | Workbook reviewed and signed off by the product owner. | D9 |
+| FR-EVL-002 | The workbook SHALL give cost per page for each model, for both self-hosted (GPU hours, GPU type, throughput pages/hour) and API providers. GPU usage SHALL be included because the engine is hosted, not only API cost. | P0 | Every candidate row has a per-page cost and a GPU profile, with stated assumptions. | D9, NFR-016 |
+| FR-EVL-003 | The workbook SHALL state, per category, the recommended model and the runner-up, with measured accuracy on a sample set where available and clearly marked "vendor claim" where not (R1). | P0 | No accuracy figure is shown without its source. | D9, R1 |
+| FR-EVL-004 | The workbook SHALL cover domain variation (loan onboarding, claims, credit card, KYC) and state which need fine-tuning vs schema-only. | P1 | One row per domain with a fine-tune/no-fine-tune call and the reason. | D9, D11 |
+
+### 5.2.3 Training and accuracy improvement (v1.4)
+
+| ID | Requirement | Pri | Acceptance criteria | Source |
+| --- | --- | --- | --- | --- |
+| FR-TRN-001 | The system SHALL support PEFT/QLoRA fine-tuning per category and domain using synthetic data and real scanned client forms, run inside the deployment that holds the data. | P0 | A fine-tune run produces a versioned adapter linked to its dataset lineage. | D11, SEC-018 |
+| FR-TRN-002 | A synthetic form generator SHALL produce labelled training pages (fields, values, bounding boxes) per domain, including handwriting-style fills. | P0 | Generator outputs images plus ground-truth JSON per schema. | D11, R7 |
+| FR-TRN-003 | Accuracy SHALL be measured per training iteration on a locked held-out set and recorded so improvement is visible (reference experience: about 60% at first iteration rising to 85 to 90% with more real scans). | P0 | A table of iteration vs field accuracy exists per domain. | D11 |
+| FR-TRN-004 | Once real client scans are available, the system SHALL allow adding them to the training set subject to approval (GR-012). Reviewer corrections feed the same set (FR-REV-004). | P1 | Added samples are traceable and none enter the locked set automatically. | D11 |
 
 ### 5.3 Visual layout parsing
 
@@ -487,6 +541,21 @@ Aligning each screen's data bindings (8.8) with the API list exposed these gaps.
 ## 8. Screens and mock-screen generation
 
 Mock screens are generated from this section before any UI code is written, so every screen is specified, reviewed with the personas and traceable to a requirement. A screen without a spec here SHALL NOT be built.
+
+### 8.0 Basic demo UI (v1.4, D13)
+
+The product owner asked for a basic UI to upload a document first, ahead of the full screen set. Reference implementation: the Gradio app in `app.py`. This is a demo surface, not a replacement for SCR-01 to SCR-10.
+
+| ID | Requirement | Pri | Acceptance criteria |
+| --- | --- | --- | --- |
+| FR-DEMO-001 | The UI SHALL let the user upload a document (JPG, PNG, PDF, TIFF). | P0 | Given a supported file, Then it is accepted and previewed. |
+| FR-DEMO-002 | The UI SHALL let the user choose the **document type** (for example DOC-01 CASA, or Auto-detect). | P0 | Selecting a type skips type classification and binds that schema. |
+| FR-DEMO-003 | The UI SHALL let the user choose the **category**: structured, unstructured or handwritten, or Auto-detect. | P0 | Selection routes to that category's model (FR-RTE-001); Auto-detect runs FR-CLS-005. |
+| FR-DEMO-004 | For **unstructured** documents the UI SHALL offer a sub-type (brochure, pamphlet, menu card, CASA leaflet, invitation card, other). | P1 | Sub-type is passed to extraction and shown in the result. |
+| FR-DEMO-005 | The UI SHALL show the **classification result**: category, document type, language, confidence, and whether each was auto-detected or user-selected. | P0 | All five values visible after Extract. |
+| FR-DEMO-006 | The UI SHALL show the **JSON output** in the §6.3 envelope and the annotated page with field bounding boxes, and SHALL allow downloading the JSON. | P0 | JSON validates against the envelope schema; boxes align with the text (no double scaling, correct `[ymin, xmin, ymax, xmax]` mapping). |
+
+Demo flow: Upload → (optional) choose category and type → Extract → classification result → JSON output and annotated image.
 
 ### 8.1 Mock-screen generation requirements
 
@@ -995,6 +1064,8 @@ A service passes no gate by waiver; a merge that fails one is blocked, as in the
 
 Phases are gated by evidence, not dates. Durations are set after capacity planning and hardware confirmation. The approach document's advice is followed: stabilise the pipeline on the two structural extremes (CASA form and discharge summary), then treat the rest as schema work.
 
+**Demo phase (v1.4, immediate).** Basic demo for the product owner on 2026-11-13: upload UI with category and type selection (Section 8.0), JSON output, single default model with the routing table in place. In parallel: the model and cost workbook (FR-EVL-001 to FR-EVL-004) and the first synthetic-data training iteration (FR-TRN-001 to FR-TRN-003). Real client scans are added when the first client is onboarded.
+
 **MVP — prove the pipeline on one document per domain.**
 
 - Types: DOC-01 CASA, DOC-02 Insurance application, DOC-03 Discharge summary.
@@ -1034,6 +1105,8 @@ Phases are gated by evidence, not dates. Durations are set after capacity planni
 | R9 | Reviewer fatigue causes accepting wrong values. | Escapes | Evidence highlight, no pre-checked accept-all, escape audit sampling of auto-approved documents. | FR-REV-001 |
 | R10 | Scope creep to "any document". | Missed commitments | Publish supported types with measured accuracy; new type only through schema and gate. | §3.1 |
 | R11 | Cloud provider use conflicts with a customer's or regulator's expectations for PII or PHI. | Lost deals or a compliance finding | Off by default; signed policy per tenant and document type; agreement, region and no-training conditions; on-premise profile with providers disabled; call logging without content. | GR-021 to GR-025, ARC-006 |
+| R13 | A single model underperforms on handwritten or unstructured documents (v1.4). The demo run on a handwritten CASA form returned placeholder values and misaligned boxes. | Wrong or hallucinated data | Category-based routing (D7); anti-hallucination prompt directive (transcribe only visible ink, `null` otherwise); bbox order and scaling fix; model evaluation workbook (D9); fine-tuning (D11). | FR-RTE-001, FR-EXT-003 |
+| R14 | Multiple models multiply GPU and hosting cost and test surface. | Cost overrun | Cost per page and GPU profile in the workbook (FR-EVL-002); routing table in configuration; shared interface (FR-RTE-004). | D9 |
 | R12 | SaaS and on-premise from one build widens the test and support matrix. | Schedule and quality | One container build with the profile set by configuration; the same test suite on both profiles at G1; profile-specific features deferred. | ARC-006, G1 |
 
 ### 15.2 Assumptions and dependencies
@@ -1064,6 +1137,10 @@ Phases are gated by evidence, not dates. Durations are set after capacity planni
 - [x] **Operational targets.** Confirmed: availability 99.5% (99.9% with high availability), RPO 15 minutes, RTO 4 hours, throughput 15 pages per minute.
 - [x] **Handwriting.** English only at first.
 - [x] **Healthcare data rules.** Both HIPAA and DPDP apply (GR-025).
+- [ ] **OQ-DOCX-20 Categories.** Are structured, unstructured and handwritten sufficient, or is a category missing (v1.4, D8)? Owner: product owner.
+- [ ] **OQ-DOCX-21 Models per category.** Which model for each category and language? Answered by the evaluation workbook (D9).
+- [ ] **OQ-DOCX-22 Hosting cost.** GPU type and per-page cost target for the routed models (FR-EVL-002).
+- [ ] **OQ-DOCX-23 Real training data.** Scanned client forms are expected once a client is onboarded; agree volume and delivery (D11).
 - [ ] **Samples.** The product owner will provide them; agree the delivery date and the size of the locked set (about 100 per MVP type proposed).
 - [ ] **Hardware.** Recommendations are in 12.1 (profiles P1 to P4 and S1); confirm the profile for the first pilot.
 - [ ] **STP definition.** Deferred until the first paying customer defines it (M5); revisit then.

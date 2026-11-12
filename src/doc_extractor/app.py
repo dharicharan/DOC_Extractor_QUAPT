@@ -8,6 +8,9 @@ Draws grounded bounding boxes on the image -> Displays structured JSON.
 import io
 import json
 import os
+
+# Reduce CUDA fragmentation on small GPUs (must be set before torch initialises CUDA)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from pathlib import Path
 import sys
 import tempfile

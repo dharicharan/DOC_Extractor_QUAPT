@@ -35,6 +35,31 @@ from doc_extractor.schemas import (
 
 logger = logging.getLogger("doc_extractor.extractor")
 
+
+# Cap on image pixels sent to a vision model. A full 200 DPI A4 page becomes thousands of image
+# tokens and runs a 16 GB T4 out of memory. ~1.3 MP keeps forms readable. Override: DOC_MAX_IMAGE_PIXELS.
+MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", str(1280 * 1024)))
+
+
+def load_capped_image(image_input, max_pixels: int = MAX_IMAGE_PIXELS):
+    """Open an image (path or bytes) as RGB and downscale it, keeping aspect ratio, to at most max_pixels.
+    Boxes are on a 0-1000 normalised grid, so resizing does not change them."""
+    import io as _io
+    from PIL import Image as _Image
+
+    if isinstance(image_input, (str, Path)):
+        img = _Image.open(image_input)
+    elif isinstance(image_input, (bytes, bytearray)):
+        img = _Image.open(_io.BytesIO(image_input))
+    else:
+        img = image_input
+    img = img.convert("RGB")
+    w, h = img.size
+    if w * h > max_pixels:
+        scale = (max_pixels / float(w * h)) ** 0.5
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), _Image.LANCZOS)
+    return img
+
 SCHEMA_MAP: Dict[str, Type[BaseModel]] = {
     "DOC-01": CASASchema,
     "DOC-02": InsuranceApplicationSchema,
@@ -490,7 +515,7 @@ class SchemaGuidedExtractor:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": str(image_input) if isinstance(image_input, (str, Path)) else image_input},
+                    {"type": "image", "image": load_capped_image(image_input)},
                     {"type": "text", "text": user_text},
                 ],
             },
@@ -523,9 +548,13 @@ class SchemaGuidedExtractor:
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
-        return processor.batch_decode(
+        text_out = processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
+        del inputs, generated_ids, generated_ids_trimmed
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return text_out
 
     def _extract_via_vllm_api(
         self,
@@ -594,6 +623,7 @@ class SchemaGuidedExtractor:
                 trust_remote_code=self.trust_remote_code,
             )
             kwargs = {
+                "attn_implementation": "sdpa",  # memory-efficient attention (eager materialises huge matrices)
                 "device_map": self.device,
                 "trust_remote_code": self.trust_remote_code,
             }

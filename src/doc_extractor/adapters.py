@@ -22,6 +22,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from doc_extractor.contracts_c import ExecutionMode, ExecutionProvenance
+from doc_extractor.extractor import load_capped_image
 
 logger = logging.getLogger("doc_extractor.adapters")
 
@@ -93,7 +94,8 @@ class OCRTextAdapter(ModelAdapter):
 
             self._ocr_proc = AutoProcessor.from_pretrained(self.ocr_model, trust_remote_code=True)
             self._ocr = AutoModelForImageTextToText.from_pretrained(
-                self.ocr_model, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
+                self.ocr_model, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+                attn_implementation="sdpa",
             )
             self._ocr.eval()
         return self._ocr, self._ocr_proc
@@ -123,7 +125,7 @@ class OCRTextAdapter(ModelAdapter):
         model, proc = self._load_ocr()
         messages = [{
             "role": "user",
-            "content": [{"type": "image", "url": str(image_path)}, {"type": "text", "text": OCR_PROMPT}],
+            "content": [{"type": "image", "image": load_capped_image(image_path)}, {"type": "text", "text": OCR_PROMPT}],
         }]
         inputs = proc.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt"

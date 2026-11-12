@@ -158,7 +158,7 @@ def process_document(
     doc_type_choice: str,
     subtype_choice: str,
     language_choice: str,
-    use_qwen_vl: bool,
+    use_qwen_vl: bool = True,
 ) -> Tuple[Optional[Image.Image], str, str, str, Optional[str]]:
     """Returns (annotated_image, status_text, json_output, classification_markdown, json_file_path).
 
@@ -368,10 +368,6 @@ def create_demo() -> "gr.Blocks":
                     language_dd = gr.Dropdown(
                         choices=[AUTO] + list(LANGUAGES), value=AUTO, label="Language",
                     )
-                use_vlm_checkbox = gr.Checkbox(
-                    value=True,
-                    label="🤖 Use Qwen3-VL-8B (uncheck for CPU heuristic fallback, structured DOC-01 to DOC-03 only)",
-                )
                 submit_btn = gr.Button("Classify & Extract", variant="primary")
 
             with gr.Column(scale=2):
@@ -385,7 +381,7 @@ def create_demo() -> "gr.Blocks":
 
         submit_btn.click(
             fn=process_document,
-            inputs=[input_file, category_dd, doc_type_dd, subtype_dd, language_dd, use_vlm_checkbox],
+            inputs=[input_file, category_dd, doc_type_dd, subtype_dd, language_dd],
             outputs=[output_image, status_box, output_json, classification_md, json_file],
         )
 

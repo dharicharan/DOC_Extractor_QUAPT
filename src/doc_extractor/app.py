@@ -303,6 +303,11 @@ def process_document(
                 flags.append({"code": "EVIDENCE_MISSING", "fields": no_evidence})
             if failed:
                 flags.append({"code": "VALIDATION_FAILED", "fields": failed})
+            page_count = len(payload_a.pages)
+            if page_count > 1:
+                # Demo reads page 1 only (multi-page documents are rare); say so instead of silently ignoring the rest
+                flags.append({"code": "PAGES_NOT_PROCESSED", "fields": [],
+                              "detail": f"Only page 1 of {page_count} was classified and extracted."})
 
             annotated_img = draw_bounding_boxes(base_img, fields_dict)
             # SCH-012 gating. Confidence is uncalibrated, so the demo never auto-approves (GR-027).
@@ -340,6 +345,7 @@ def process_document(
             status_msg = (
                 f"Status: {doc_status.upper()} | Category: {category.value} | Type: {doc_type or 'generic'} | "
                 f"Fields: {len(fields_dict)} | Flags: {len(flags)} | Model: {route['model_used']}"
+                + (f" | Page 1 of {page_count} only" if page_count > 1 else "")
             )
             yield annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
             return

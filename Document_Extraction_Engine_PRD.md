@@ -561,6 +561,7 @@ The product owner asked for a basic UI to upload a document first, ahead of the 
 | FR-DEMO-004 | For **unstructured** documents the UI SHALL offer a sub-type (brochure, pamphlet, menu card, CASA leaflet, invitation card, other). | P1 | Sub-type is passed to extraction and shown in the result. |
 | FR-DEMO-005 | The UI SHALL show the **classification result**: category, document type, language, confidence, and whether each was auto-detected or user-selected. | P0 | All five values visible after Extract. |
 | FR-DEMO-006 | The UI SHALL show the **JSON output** in the §6.3 envelope and the annotated page with field bounding boxes, and SHALL allow downloading the JSON. | P0 | JSON validates against the envelope schema; boxes align with the text (no double scaling, correct `[ymin, xmin, ymax, xmax]` mapping). |
+| FR-DEMO-007 | The demo SHALL classify and extract the **first page only** (multi-page documents are rare for the demo audience) and SHALL flag `PAGES_NOT_PROCESSED` with the page count when the file has more pages. Full multi-page and bundle handling stays in FR-ING-004, FR-EXT-005 and FR-ING-007. | P0 | Given a 3-page PDF, Then only page 1 is processed and the envelope carries `PAGES_NOT_PROCESSED`. |
 
 Demo flow: Upload → (optional) choose category and type → Extract → classification result → JSON output and annotated image.
 

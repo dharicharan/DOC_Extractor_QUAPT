@@ -48,6 +48,12 @@ DEFAULT_ROUTING_TABLE: Dict[str, Any] = {
         "unstructured": {"default": DEFAULT_MODEL},
         "handwritten": {"default": DEFAULT_MODEL},
     },
+    # A route value is a model name (VLM) or a dict such as
+    # {"adapter": "ocr_text", "ocr_model": "...", "text_model": "..."}.
+    # alt_engines are the specialists the demo can switch to for comparison (FR-RTE-007).
+    "alt_engines": {
+        "ocr_text": {"adapter": "ocr_text", "ocr_model": "zai-org/GLM-OCR", "text_model": "Qwen/Qwen3-8B"},
+    },
 }
 
 
@@ -59,11 +65,19 @@ def load_routing_table() -> Dict[str, Any]:
     return DEFAULT_ROUTING_TABLE
 
 
-def select_model(category: DocumentCategory, language: str, table: Optional[Dict[str, Any]] = None) -> str:
-    """FR-RTE-001/002: routing keyed by (category, language); falls back to category default."""
+def select_route(category: DocumentCategory, language: str, table: Optional[Dict[str, Any]] = None) -> Any:
+    """FR-RTE-001/002: route keyed by (category, language). Returns a model name or an adapter dict."""
     table = table or load_routing_table()
     cat_routes = table.get("routes", {}).get(category.value, {})
     return cat_routes.get(language) or cat_routes.get("default") or table.get("default_model", DEFAULT_MODEL)
+
+
+def select_model(category: DocumentCategory, language: str, table: Optional[Dict[str, Any]] = None) -> str:
+    """Model name of the route (for an adapter dict, its label)."""
+    route = select_route(category, language, table)
+    if isinstance(route, dict):
+        return route.get("model") or " + ".join(filter(None, [route.get("ocr_model"), route.get("text_model")]))
+    return route
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +205,19 @@ class RoutedExtractor:
             result["fallback_reason"] = str(exc)
             return result
 
+    def get_adapter(self, route: Any):
+        """Build (and cache) the adapter for a route value: model name -> VLM, dict -> by 'adapter'."""
+        from doc_extractor.adapters import OCRTextAdapter, VLMAdapter
+
+        if isinstance(route, dict) and route.get("adapter") == "ocr_text":
+            key = f"ocr_text::{route.get('ocr_model')}::{route.get('text_model')}"
+            if key not in self._cache:
+                kw = {k: route[k] for k in ("ocr_model", "text_model") if k in route}
+                self._cache[key] = OCRTextAdapter(**kw)
+            return self._cache[key]
+        model_name = route.get("model") if isinstance(route, dict) else route
+        return VLMAdapter(self.get_extractor(model_name))
+
     def extract(
         self,
         image_path: str,
@@ -198,34 +225,54 @@ class RoutedExtractor:
         language: str = "en",
         schema_cls: Optional[Type[BaseModel]] = None,
         subtype: Optional[str] = None,
+        engine: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], ExecutionProvenance, Dict[str, Any]]:
-        """Returns (raw_fields, provenance, route_info)."""
-        routed = select_model(category, language, self.table)
+        """Returns (raw_fields, provenance, route_info).
+
+        engine: None or "vlm" follows the routing table; another key (for example "ocr_text") picks
+        that entry of table["alt_engines"] for side-by-side comparison.
+        """
         default = self.table.get("default_model", DEFAULT_MODEL)
+        if engine and engine != "vlm":
+            alt = self.table.get("alt_engines", {}).get(engine)
+            if alt is None:
+                raise ValueError(f"unknown engine {engine!r}")
+            routed = alt
+        else:
+            routed = select_route(category, language, self.table)
+
+        default_extractor = self.get_extractor(default)
+        if schema_cls is not None and category == DocumentCategory.STRUCTURED:
+            prompt = default_extractor._build_system_prompt(schema_cls)
+        else:
+            prompt = build_generic_prompt(category, subtype, language)
+
+        routed_label = select_model(category, language, {"routes": {category.value: {"default": routed}}})
         candidates = [routed] if routed == default else [routed, default]
 
         last_exc: Optional[Exception] = None
-        for i, model_name in enumerate(candidates):
-            extractor = self.get_extractor(model_name)
+        for i, route in enumerate(candidates):
             try:
-                if schema_cls is not None and category == DocumentCategory.STRUCTURED:
-                    raw, prov = extractor.extract_page_image(image_path, schema_cls)
-                else:
-                    prompt = build_generic_prompt(category, subtype, language)
-                    raw, prov = extractor.extract_page_image(image_path, None, system_prompt=prompt)
+                adapter = self.get_adapter(route)
+                raw, prov, meta = adapter.extract(image_path, prompt)
                 if i > 0:
                     prov.fallback_occurred = True
-                    prov.fallback_reason = f"routed model {routed} failed: {last_exc}"
+                    prov.fallback_reason = f"routed model {routed_label} failed: {last_exc}"
                 info = {
                     "document_category": category.value,
                     "language": language,
-                    "routed_model": routed,
-                    "model_used": model_name,
+                    "routed_model": routed_label,
+                    "model_used": adapter.model_label,
+                    "adapter": adapter.kind,
+                    "grounded": meta.get("grounded", True),
+                    "models": meta.get("models", {}),
                     "fallback_occurred": i > 0,
                     "routing_table_version": self.table.get("version"),
                 }
+                if "ocr_text_preview" in meta:
+                    info["ocr_text_preview"] = meta["ocr_text_preview"]
                 return raw, prov, info
             except Exception as exc:
-                logger.error("Extraction with %s failed: %s", model_name, exc)
+                logger.error("Extraction with %s failed: %s", route, exc)
                 last_exc = exc
         raise last_exc  # type: ignore[misc]

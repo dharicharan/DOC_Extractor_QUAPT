@@ -37,7 +37,9 @@ from doc_extractor.handoff import CoordinateTransform
 from doc_extractor.pipeline import ModuleAPipeline
 from doc_extractor.pipeline_b import ModuleBPipeline
 from doc_extractor.pipeline_c import ModuleCPipeline
+from doc_extractor.validation_rules import normalize_and_format
 from doc_extractor.routing import (
+    DEFAULT_MODEL,
     LANGUAGES,
     UNSTRUCTURED_SUBTYPES,
     DocumentCategory,
@@ -47,6 +49,7 @@ from doc_extractor.routing import (
 from doc_extractor.storage import LocalDiskStorage
 
 AUTO = "Auto-Detect"
+ENGINE_CHOICES = {"Follow routing table": None, "GLM-OCR + text LLM (experimental)": "ocr_text"}
 
 try:
     import gradio as gr
@@ -158,6 +161,7 @@ def process_document(
     doc_type_choice: str,
     subtype_choice: str,
     language_choice: str,
+    engine_choice: str = "Follow routing table",
     use_qwen_vl: bool = True,
 ) -> Tuple[Optional[Image.Image], str, str, str, Optional[str]]:
     """Returns (annotated_image, status_text, json_output, classification_markdown, json_file_path).
@@ -240,8 +244,9 @@ def process_document(
 
         # 4. Extraction
         if use_qwen_vl and img_path and img_path.exists():
+            engine = ENGINE_CHOICES.get(engine_choice)
             raw_dict, prov, route = get_routed_extractor().extract(
-                str(img_path), category, language, schema_cls, subtype
+                str(img_path), category, language, schema_cls, subtype, engine=engine
             )
             info["model_used"] = route["model_used"]
             info["fallback_occurred"] = route["fallback_occurred"]
@@ -250,30 +255,54 @@ def process_document(
                 w, h = pil_img.size
                 base_img = pil_img.copy()
 
+            grounded = route.get("grounded", True)
             fields_dict: Dict[str, Any] = {}
+            flags: List[Dict[str, Any]] = []
+            no_evidence: List[str] = []
+            failed: List[str] = []
             for fpath, item in raw_dict.items():
                 if not isinstance(item, dict):
                     continue
                 v = item.get("value")
                 bbox = item.get("bbox")
-                if v is None and bbox is None:
-                    continue
+                null_reason = None
+                validation = "not_applicable"
+                if v is None:
+                    null_reason = "absent"
+                elif schema_cls is not None:
+                    # FR-VAL-001/002: deterministic normalisation and format checks (schema'd fields only)
+                    v, err = normalize_and_format(fpath, v)
+                    validation = "failed" if err else "passed"
+                    if err:
+                        failed.append(fpath)
                 ev = None
-                if bbox and len(bbox) == 4:
-                    ev = {
-                        "page": 1,
-                        "bbox": _bbox_to_pixels(bbox, w, h),
-                        "text_snippet": str(v)[:120],
-                        "ocr_confidence": 0.95,
-                    }
+                if v is not None and grounded and isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    ev = {"page": 1, "bbox": _bbox_to_pixels(bbox, w, h), "text": str(v)[:120]}
+                elif v is not None:
+                    no_evidence.append(fpath)  # GR-002: value without a box
                 fields_dict[fpath] = {
                     "value": v,
-                    "calibrated_confidence": 0.95 if v is not None else 0.0,
-                    "review_required": category == DocumentCategory.HANDWRITTEN or bool(item.get("uncertain")),
+                    # confidence is not calibrated yet (FR-CNF-001, M6), so no number is claimed
+                    "confidence": None,
+                    "null_reason": null_reason,
+                    "review_required": (
+                        v is not None and (
+                            category == DocumentCategory.HANDWRITTEN or bool(item.get("uncertain"))
+                            or validation == "failed" or ev is None
+                        )
+                    ),
+                    "validation": validation,
                     "evidence": ev,
                 }
+            if no_evidence:
+                # PRD SCH-013 says null such values. The demo keeps the value but flags it for review.
+                flags.append({"code": "EVIDENCE_MISSING", "fields": no_evidence})
+            if failed:
+                flags.append({"code": "VALIDATION_FAILED", "fields": failed})
 
             annotated_img = draw_bounding_boxes(base_img, fields_dict)
+            # SCH-012 gating. Confidence is uncalibrated, so the demo never auto-approves (GR-027).
+            doc_status = "needs_review"
             envelope = {
                 "document_id": payload_a.document_id,
                 "document_metadata": {
@@ -284,26 +313,29 @@ def process_document(
                     "schema_id": doc_type,
                     "schema_version": "1.0.0" if doc_type else None,
                     "classification_confidence": info["confidence"],
-                    "status": "valid",
+                    "status": doc_status,
                     "page_count": len(payload_a.pages),
                 },
                 "fields": fields_dict,
-                "flags": [],
+                "flags": flags,
                 "run": {
                     "run_id": payload_a.run_id,
                     "document_category": category.value,
                     "model_versions": {
-                        "routed_model": route["model_used"],
+                        "router": info.get("method") if info.get("method") != "vlm" else DEFAULT_MODEL,
+                        "specialist": route["model_used"],
                         "normalizer": "deterministic-v1",
+                        **{k: v for k, v in route.get("models", {}).items() if k != "specialist"},
                     },
+                    "confidence_calibrated": False,
                     "routing": route,
                     "provenance": prov.model_dump() if hasattr(prov, "model_dump") else prov,
                 },
             }
             json_text = json.dumps(envelope, indent=2, default=str)
             status_msg = (
-                f"Status: VALID | Category: {category.value} | Type: {doc_type or 'generic'} | "
-                f"Fields: {len(fields_dict)} | Model: {route['model_used']}"
+                f"Status: {doc_status.upper()} | Category: {category.value} | Type: {doc_type or 'generic'} | "
+                f"Fields: {len(fields_dict)} | Flags: {len(flags)} | Model: {route['model_used']}"
             )
             yield annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
             return
@@ -368,6 +400,10 @@ def create_demo() -> "gr.Blocks":
                     language_dd = gr.Dropdown(
                         choices=[AUTO] + list(LANGUAGES), value=AUTO, label="Language",
                     )
+                    engine_dd = gr.Dropdown(
+                        choices=list(ENGINE_CHOICES), value="Follow routing table",
+                        label="Engine (compare the default VLM with GLM-OCR + text LLM; the OCR route has no boxes)",
+                    )
                 submit_btn = gr.Button("Classify & Extract", variant="primary")
 
             with gr.Column(scale=2):
@@ -381,7 +417,7 @@ def create_demo() -> "gr.Blocks":
 
         submit_btn.click(
             fn=process_document,
-            inputs=[input_file, category_dd, doc_type_dd, subtype_dd, language_dd],
+            inputs=[input_file, category_dd, doc_type_dd, subtype_dd, language_dd, engine_dd],
             outputs=[output_image, status_box, output_json, classification_md, json_file],
         )
 

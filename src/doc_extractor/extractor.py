@@ -42,6 +42,15 @@ logger = logging.getLogger("doc_extractor.extractor")
 MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "4200000"))
 
 
+def gpu_dtype():
+    """bfloat16 on Ampere or newer; float16 on older GPUs such as the T4 (no native bf16)."""
+    import torch
+
+    if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+        return torch.float16
+    return torch.bfloat16
+
+
 def load_capped_image(image_input, max_pixels: int = MAX_IMAGE_PIXELS):
     """Open an image (path or bytes) as RGB and downscale it, keeping aspect ratio, to at most max_pixels.
     Boxes are on a 0-1000 normalised grid, so resizing does not change them."""
@@ -233,7 +242,9 @@ class SchemaGuidedExtractor:
         provider_name: Optional[str] = None,
         is_mock: bool = False,
         llm_caller: Optional[Callable[[ModuleBOutputPayload, Type[BaseModel]], Tuple[Any, Optional[str]]]] = None,
-        device: str = "auto",
+        # "balanced" spreads layers across all visible GPUs (e.g. Kaggle 2x T4) so each keeps headroom
+        # for image activations. Override with DOC_DEVICE_MAP (e.g. "auto", "cuda:0").
+        device: str = os.environ.get("DOC_DEVICE_MAP", "balanced"),
         max_new_tokens: int = 2048,
         temperature: float = 0.0,
         trust_remote_code: bool = True,
@@ -633,12 +644,12 @@ class SchemaGuidedExtractor:
                     from transformers import BitsAndBytesConfig
                     kwargs["quantization_config"] = BitsAndBytesConfig(
                         load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_compute_dtype=gpu_dtype(),
                     )
                 except Exception:
-                    kwargs["torch_dtype"] = torch.bfloat16
+                    kwargs["torch_dtype"] = gpu_dtype()
             else:
-                kwargs["torch_dtype"] = torch.bfloat16
+                kwargs["torch_dtype"] = gpu_dtype()
 
             # Official class for Qwen3-VL in transformers is Qwen3VLForConditionalGeneration
             model_cls = (

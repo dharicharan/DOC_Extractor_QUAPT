@@ -22,7 +22,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from doc_extractor.contracts_c import ExecutionMode, ExecutionProvenance
-from doc_extractor.extractor import load_capped_image
+from doc_extractor.extractor import gpu_dtype, load_capped_image
 
 logger = logging.getLogger("doc_extractor.adapters")
 
@@ -94,7 +94,7 @@ class OCRTextAdapter(ModelAdapter):
 
             self._ocr_proc = AutoProcessor.from_pretrained(self.ocr_model, trust_remote_code=True)
             self._ocr = AutoModelForImageTextToText.from_pretrained(
-                self.ocr_model, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+                self.ocr_model, torch_dtype=gpu_dtype(), device_map="balanced", trust_remote_code=True,
                 attn_implementation="sdpa",
             )
             self._ocr.eval()
@@ -106,13 +106,13 @@ class OCRTextAdapter(ModelAdapter):
             from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
             self._tok = AutoTokenizer.from_pretrained(self.text_model, trust_remote_code=True)
-            kwargs: Dict[str, Any] = {"device_map": "auto", "trust_remote_code": True}
+            kwargs: Dict[str, Any] = {"device_map": "balanced", "trust_remote_code": True}
             if self.load_in_4bit:
                 kwargs["quantization_config"] = BitsAndBytesConfig(
-                    load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16
+                    load_in_4bit=True, bnb_4bit_compute_dtype=gpu_dtype()
                 )
             else:
-                kwargs["torch_dtype"] = torch.bfloat16
+                kwargs["torch_dtype"] = gpu_dtype()
             self._txt = AutoModelForCausalLM.from_pretrained(self.text_model, **kwargs)
             self._txt.eval()
         return self._txt, self._tok

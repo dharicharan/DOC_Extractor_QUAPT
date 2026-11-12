@@ -36,9 +36,10 @@ from doc_extractor.schemas import (
 logger = logging.getLogger("doc_extractor.extractor")
 
 
-# Cap on image pixels sent to a vision model. A full 200 DPI A4 page becomes thousands of image
-# tokens and runs a 16 GB T4 out of memory. ~1.3 MP keeps forms readable. Override: DOC_MAX_IMAGE_PIXELS.
-MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", str(1280 * 1024)))
+# Safety cap on image pixels sent to a vision model. Default keeps a full 200 DPI A4 page
+# (about 1654 x 2339 = 3.9 MP) at full resolution; with sdpa attention this should fit a 16 GB T4.
+# Lower it (e.g. DOC_MAX_IMAGE_PIXELS=1300000) only if a page still runs out of memory.
+MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "4200000"))
 
 
 def load_capped_image(image_input, max_pixels: int = MAX_IMAGE_PIXELS):

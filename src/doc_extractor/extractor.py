@@ -200,7 +200,7 @@ class SchemaGuidedExtractor:
 
     def __init__(
         self,
-        model_name: str = "Qwen2.5-7B-Instruct",
+        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         use_llm: bool = False,
         allow_fallback: bool = True,
         prompt_version: str = "1.0.0",
@@ -211,6 +211,7 @@ class SchemaGuidedExtractor:
         max_new_tokens: int = 2048,
         temperature: float = 0.0,
         trust_remote_code: bool = True,
+        load_in_4bit: bool = True,
     ):
         self.model_name = model_name
         self.use_llm = use_llm
@@ -223,6 +224,7 @@ class SchemaGuidedExtractor:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.trust_remote_code = trust_remote_code
+        self.load_in_4bit = load_in_4bit
         self._model = None
         self._processor = None
         self._local = threading.local()
@@ -418,23 +420,78 @@ class SchemaGuidedExtractor:
     def extract_page_image(
         self,
         image_input: Union[str, Path, bytes],
-        schema_cls: Type[BaseModel],
+        schema_cls: Optional[Type[BaseModel]],
+        system_prompt: Optional[str] = None,
+        user_text: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], ExecutionProvenance]:
-        """Direct 1-stage Qwen-VL multimodal extraction from page image."""
+        """Direct 1-stage Qwen-VL multimodal extraction from page image.
+
+        Either ``schema_cls`` (schema-bound prompt) or an explicit ``system_prompt``
+        (category-specific prompt from doc_extractor.routing) must be supplied.
+        """
+        if system_prompt is None:
+            if schema_cls is None:
+                raise ValueError("extract_page_image requires schema_cls or system_prompt")
+            system_prompt = self._build_system_prompt(schema_cls)
+        user_text = user_text or (
+            "Carefully transcribe all real filled values from this document image into the requested JSON schema. "
+            "Read every handwritten and printed value directly from the image; use null for anything not visible."
+        )
+
         vllm_api_base = os.environ.get("OPENAI_API_BASE") or os.environ.get("VLLM_API_BASE")
         if vllm_api_base:
-            return self._extract_via_vllm_api(image_input, schema_cls, vllm_api_base)
+            return self._extract_via_vllm_api(image_input, schema_cls, vllm_api_base, system_prompt=system_prompt)
 
+        output_text = self._generate_from_image(image_input, system_prompt, user_text, self.max_new_tokens)
+        raw_dict = self._parse_json_output(output_text)
+
+        prov = ExecutionProvenance(
+            mode=ExecutionMode.GENUINE_LLM,
+            model_name=self.model_name,
+            provider="transformers_qwen_vl",
+            prompt_version=self.prompt_version,
+            fallback_occurred=False,
+        )
+        self.last_provenance = prov
+        return raw_dict, prov
+
+    def classify_page_image(self, image_input: Union[str, Path, bytes]) -> Dict[str, Any]:
+        """Ask the VLM for document category, language and type (FR-CLS-005, FR-CLS-007).
+
+        Returns a dict with keys category, language, document_type, subtype, confidence.
+        Raises on model or parse failure so the caller can fall back to heuristics.
+        """
+        from doc_extractor.routing import CLASSIFIER_SYSTEM_PROMPT
+
+        text = self._generate_from_image(
+            image_input,
+            CLASSIFIER_SYSTEM_PROMPT,
+            "Classify this document image. Return the JSON object only.",
+            max_new_tokens=128,
+        )
+        return self._parse_json_output(text)
+
+    @staticmethod
+    def _parse_json_output(output_text: str) -> Dict[str, Any]:
+        cleaned = re.sub(r"^```json\s*", "", output_text.strip(), flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+        return json.loads(cleaned) if cleaned else {}
+
+    def _generate_from_image(
+        self,
+        image_input: Union[str, Path, bytes],
+        system_prompt: str,
+        user_text: str,
+        max_new_tokens: int,
+    ) -> str:
         model, processor = self._load_model()
-        system_prompt = self._build_system_prompt(schema_cls)
-
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": str(image_input) if isinstance(image_input, (str, Path)) else image_input},
-                    {"type": "text", "text": "Extract all fields from this document page."},
+                    {"type": "text", "text": user_text},
                 ],
             },
         ]
@@ -450,41 +507,32 @@ class SchemaGuidedExtractor:
             videos=video_inputs,
             padding=True,
             return_tensors="pt",
-        ).to(model.device)
+        )
+        device = "cuda" if torch.cuda.is_available() else model.device
+        inputs = inputs.to(device)
+
+        gen_kwargs: Dict[str, Any] = {"max_new_tokens": max_new_tokens}
+        if self.temperature > 0:
+            gen_kwargs["temperature"] = self.temperature
+            gen_kwargs["do_sample"] = True
+        else:
+            gen_kwargs["do_sample"] = False
 
         with torch.no_grad():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                do_sample=self.temperature > 0,
-            )
+            generated_ids = model.generate(**inputs, **gen_kwargs)
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
-        output_text = processor.batch_decode(
+        return processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
-
-        cleaned = re.sub(r"^```json\s*", "", output_text.strip(), flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
-        raw_dict = json.loads(cleaned) if cleaned else {}
-
-        prov = ExecutionProvenance(
-            mode=ExecutionMode.GENUINE_LLM,
-            model_name=self.model_name,
-            provider="transformers_qwen_vl",
-            prompt_version=self.prompt_version,
-            fallback_occurred=False,
-        )
-        self.last_provenance = prov
-        return raw_dict, prov
 
     def _extract_via_vllm_api(
         self,
         image_input: Union[str, Path, bytes],
-        schema_cls: Type[BaseModel],
+        schema_cls: Optional[Type[BaseModel]],
         api_base: str,
+        system_prompt: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], ExecutionProvenance]:
         """Calls vLLM OpenAI-compatible vision completions endpoint."""
         if isinstance(image_input, (str, Path)):
@@ -493,7 +541,7 @@ class SchemaGuidedExtractor:
         else:
             b64_img = base64.b64encode(image_input).decode("utf-8")
 
-        prompt = self._build_system_prompt(schema_cls)
+        prompt = system_prompt or self._build_system_prompt(schema_cls)
         req_body = {
             "model": self.model_name,
             "messages": [
@@ -535,50 +583,98 @@ class SchemaGuidedExtractor:
         return raw_dict, prov
 
     def _load_model(self):
-        """Lazily load Qwen2.5-VL model and processor."""
+        """Lazily load Qwen-VL model and processor using official AutoModelForMultimodalLM."""
         if self._model is None or self._processor is None:
             import torch
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            import transformers
+            from transformers import AutoProcessor
 
             self._processor = AutoProcessor.from_pretrained(
                 self.model_name,
                 trust_remote_code=self.trust_remote_code,
             )
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            kwargs = {
+                "device_map": self.device,
+                "trust_remote_code": self.trust_remote_code,
+            }
+            if getattr(self, "load_in_4bit", True):
+                try:
+                    from transformers import BitsAndBytesConfig
+                    kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                    )
+                except Exception:
+                    kwargs["torch_dtype"] = torch.bfloat16
+            else:
+                kwargs["torch_dtype"] = torch.bfloat16
+
+            # Official class for Qwen3-VL in transformers is Qwen3VLForConditionalGeneration
+            model_cls = (
+                getattr(transformers, "Qwen3VLForConditionalGeneration", None)
+                or getattr(transformers, "AutoModelForImageTextToText", None)
+                or getattr(transformers, "AutoModelForMultimodalLM", None)
+                or getattr(transformers, "AutoModelForCausalLM", None)
+                or getattr(transformers, "AutoModel", None)
+            )
+
+            if model_cls is None:
+                from transformers import AutoModel
+                model_cls = AutoModel
+
+            self._model = model_cls.from_pretrained(
                 self.model_name,
-                torch_dtype=torch.bfloat16,
-                device_map=self.device,
-                trust_remote_code=self.trust_remote_code,
+                **kwargs,
             )
             self._model.eval()
         return self._model, self._processor
 
     def _build_system_prompt(self, schema_cls: Type[BaseModel]) -> str:
-        """Constructs schema-bound system prompt."""
+        """Constructs schema-bound system prompt with full leaf field paths."""
+        def get_leaf_fields(cls: Type[BaseModel], prefix: str = "") -> List[Tuple[str, str]]:
+            fields: List[Tuple[str, str]] = []
+            for name, info in cls.model_fields.items():
+                full_name = f"{prefix}.{name}" if prefix else name
+                ann = info.annotation
+                args = getattr(ann, "__args__", ())
+                target_cls = None
+                if isinstance(ann, type) and issubclass(ann, BaseModel):
+                    target_cls = ann
+                elif args:
+                    for a in args:
+                        if isinstance(a, type) and issubclass(a, BaseModel):
+                            target_cls = a
+                            break
+
+                if target_cls:
+                    fields.extend(get_leaf_fields(target_cls, full_name))
+                else:
+                    desc = info.description or ""
+                    fields.append((full_name, desc))
+            return fields
+
+        leaf_fields = get_leaf_fields(schema_cls)
         field_lines: List[str] = []
-        for field_name, field_info in schema_cls.model_fields.items():
-            desc = field_info.description or ""
+        for field_name, desc in leaf_fields:
             field_lines.append(
                 f'  "{field_name}": {{"value": "<extracted_string_or_null>", "bbox": [ymin, xmin, ymax, xmax]}}  # {desc}'
             )
         fields_json = ",\n".join(field_lines)
 
-        return f"""You are an expert document extraction engine specialized in BFSI and Healthcare documents.
+        return f"""You are a high-precision document OCR and extraction engine specialized in Indian BFSI forms.
 
-TASK: Read the provided document image and extract all fields defined in the target schema below. Output a SINGLE valid JSON object only.
+TASK:
+Examine this document image with extreme precision. Extract the actual handwritten and printed text corresponding to the target fields.
 
 TARGET SCHEMA FIELDS:
 {fields_json}
 
-OUTPUT FORMAT (STRICT):
-- Return a flat JSON object where each key is a field name from the schema.
-- Each field value must be an object with exactly two keys: "value" and "bbox".
-- "value": The extracted string or numeric value, or null if the field is absent or illegible.
-- "bbox": Bounding box in [ymin, xmin, ymax, xmax] format, normalized to [0-1000] range.
-- GR-002: NO value without a grounded bounding box. If you cannot visually locate the text, set value to null and bbox to null.
-- GR-003: null by default; absent or illegible fields get null value with null bbox.
-- Do NOT include markdown code fences (```json ... ```). Return raw JSON only.
-- Preserve leading zeros on account numbers and IDs.
+CRITICAL RULES:
+1. TRANSCRIBE ACTUAL INK: Read the real handwritten and printed letters on the page (character boxes, handwriting, checkboxes). Do NOT invent, assume, or hallucinate placeholder names (e.g. NEVER output dummy names like "GOPAL SINGH" or dummy PANs like "ABCD12345C").
+2. CHARACTER BOXES: For names, PAN, Aadhaar, read the individual letters written in the character grid boxes carefully (e.g. R-U-P-E-S-H -> RUPESH).
+3. ABSENT FIELDS: If a field is not filled or not present on this document, set "value": null and "bbox": null.
+4. BOUNDING BOXES: "bbox" must be [ymin, xmin, ymax, xmax] in normalized 0-1000 scale surrounding the exact text or checked box.
+5. STRICT FORMAT: Return raw valid JSON only. No markdown fences.
 """
 
     def _extract_heuristic(

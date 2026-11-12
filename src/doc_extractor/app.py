@@ -335,6 +335,9 @@ def _process_core(
         _step(steps, "split", state="done", detail=f"{total_pages} page image(s)" + (
             f", reading the first {len(page_items)}" if total_pages > len(page_items) else ""))
         split_gallery = [(_thumb(p), f"Page {n} (split)") for n, p, _ in page_items if p and Path(p).exists()]
+        if split_gallery:
+            pw, ph = split_gallery[0][0].size
+            _step(steps, "split", detail=steps[1]["detail"] + f" · page 1 is {pw}×{ph} px ({pw * ph / 1e6:.1f} MP)")
         _step(steps, "cls", "Classify document from page 1 (router model, once)")
         for n, _, _ in page_items:
             _step(steps, f"ext{n}", f"Page {n}: extract fields")

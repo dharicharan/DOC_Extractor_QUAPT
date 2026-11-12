@@ -22,7 +22,9 @@ from doc_extractor.contracts_c import ExecutionProvenance
 
 logger = logging.getLogger("doc_extractor.routing")
 
-DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
+# One model routes and extracts. 4B fits a 16 GB T4 with room for the image; set
+# DOC_DEFAULT_MODEL=Qwen/Qwen3-VL-8B-Instruct on a bigger GPU for higher accuracy.
+DEFAULT_MODEL = os.environ.get("DOC_DEFAULT_MODEL", "Qwen/Qwen3-VL-4B-Instruct")
 
 
 class DocumentCategory(str, Enum):

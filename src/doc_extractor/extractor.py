@@ -41,7 +41,8 @@ logger = logging.getLogger("doc_extractor.extractor")
 # which cannot fit a 16 GB T4. 2.0 MP (about 143 DPI for A4) needs roughly a quarter of that.
 # The earlier notebook tests ran at max_pixels=1280*28*28 (1.0 MP). Raise on a bigger GPU:
 # DOC_MAX_IMAGE_PIXELS=4200000 keeps full 200 DPI.
-MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "2000000"))
+# 2.0 MP still ran a T4 out of memory during extraction (GPU full), so the default is 1.3 MP.
+MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "1300000"))
 # Classification (category, language, rotation) does not need 200 DPI: a small image is far faster.
 CLASSIFY_MAX_PIXELS = int(os.environ.get("DOC_CLASSIFY_MAX_PIXELS", "500000"))
 

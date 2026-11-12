@@ -5,7 +5,7 @@ Every route runs behind one interface, so the routing table can send a category 
 different kind of model without changing the app:
 
 - VLMAdapter:      a vision-language model that reads the page and returns schema JSON with boxes
-                   (Qwen3-VL-8B, the default).
+                   (Qwen3-VL-4B by default).
 - OCRTextAdapter:  an OCR model reads the page to text, then a text LLM of comparable size maps the
                    text to the schema (for example GLM-OCR + Qwen3-4B-Instruct-2507). The text LLM cannot see the
                    page, so checkboxes and character grids should stay on the VLM route.

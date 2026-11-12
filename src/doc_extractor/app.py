@@ -318,8 +318,8 @@ def _process_core(
         _step(steps, "split", state="done", detail=f"{total_pages} page image(s)" + (
             f", reading the first {len(page_items)}" if total_pages > len(page_items) else ""))
         split_gallery = [(_thumb(p), f"Page {n} (split)") for n, p, _ in page_items if p and Path(p).exists()]
+        _step(steps, "cls", "Classify document from page 1 (router model, once)")
         for n, _, _ in page_items:
-            _step(steps, f"cls{n}", f"Page {n}: classify (router model)")
             _step(steps, f"ext{n}", f"Page {n}: extract fields")
         _step(steps, "merge", "Validate and build JSON")
         yield split_gallery or None, f"Split into {total_pages} page image(s).", "", "", None
@@ -341,16 +341,18 @@ def _process_core(
         provs: List[Any] = []
         routes: List[Dict[str, Any]] = []
 
+        # Classify ONCE from page 1 and apply to every page (mixed-category PDFs are rare)
+        _step(steps, "cls", state="running", detail="detecting category, type and language")
+        yield (split_gallery or None, "Classifying the document from page 1...", "", "", None)
+        doc_info = _resolve_page(page_items[0][1], claimed_name, rule_type, choices, 1)
+        _step(steps, "cls", state="done",
+              detail=f"{doc_info['category']} · {doc_info['document_type']} · {doc_info['language']} · {doc_info['category_source']}")
+
         for page_no, img_path, orig_path in page_items:
-            _step(steps, f"cls{page_no}", state="running", detail="detecting category, type and language")
-            yield (gallery or split_gallery or None, f"Page {page_no}: classifying...", "",
-                   _classification_markdown(pages_info), None)
-            info = _resolve_page(img_path, claimed_name, rule_type, choices, page_no)
+            info = dict(doc_info, page=page_no)
             category = DocumentCategory(info["category"])
             schema_cls = SCHEMA_MAP.get(info["schema_id"]) if info["schema_id"] else None
             pages_info.append(info)
-            _step(steps, f"cls{page_no}", state="done",
-                  detail=f"{category.value} · {info['document_type']} · {info['language']} · {info['category_source']}")
             _step(steps, f"ext{page_no}", state="running", detail=f"routing to the {category.value} model")
             yield (gallery or split_gallery or None,
                    f"Page {page_no}/{len(page_items)}: classified as {category.value} ({info['language']}). Extracting...",

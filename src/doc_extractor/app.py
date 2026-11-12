@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure src/ is on sys.path and clean out doc_extractor directory from sys.path
@@ -213,6 +214,43 @@ def _resolve_page(
     }
 
 
+_STEP_ICONS = {"pending": "⬜", "running": "⏳", "done": "✅", "failed": "❌"}
+
+
+def _step(steps: List[Dict[str, Any]], key: str, label: Optional[str] = None,
+          state: Optional[str] = None, detail: Optional[str] = None) -> None:
+    """Add or update one row of the pipeline-steps panel."""
+    row = next((r for r in steps if r["key"] == key), None)
+    if row is None:
+        row = {"key": key, "label": label or key, "state": "pending", "detail": "", "t0": None, "secs": None}
+        steps.append(row)
+    if label:
+        row["label"] = label
+    if state:
+        if state == "running":
+            row["t0"] = time.perf_counter()
+        elif state in ("done", "failed") and row.get("t0"):
+            row["secs"] = time.perf_counter() - row["t0"]
+        row["state"] = state
+    if detail is not None:
+        row["detail"] = detail
+
+
+def _render_steps(steps: List[Dict[str, Any]]) -> str:
+    if not steps:
+        return "Upload a document and click **Classify & Extract**."
+    lines = ["| | Step | Result | Time |", "| --- | --- | --- | --- |"]
+    for r in steps:
+        t = f"{r['secs']:.1f}s" if r.get("secs") is not None else ("..." if r["state"] == "running" else "")
+        lines.append(f"| {_STEP_ICONS[r['state']]} | {r['label']} | {r['detail']} | {t} |")
+    return "\n".join(lines)
+
+
+def _thumb(path: Path) -> Image.Image:
+    with Image.open(path) as im:
+        return im.convert("RGB").copy()
+
+
 def process_document(
     file_obj,
     category_choice: str,
@@ -220,6 +258,22 @@ def process_document(
     subtype_choice: str,
     language_choice: str,
     engine_choice: str = "Follow routing table",
+):
+    """UI entry point: runs the pipeline and adds the live pipeline-steps panel to every update."""
+    steps: List[Dict[str, Any]] = []
+    for out in _process_core(file_obj, category_choice, doc_type_choice, subtype_choice,
+                             language_choice, engine_choice, steps):
+        yield (*out, _render_steps(steps))
+
+
+def _process_core(
+    file_obj,
+    category_choice: str,
+    doc_type_choice: str,
+    subtype_choice: str,
+    language_choice: str,
+    engine_choice: str,
+    steps: List[Dict[str, Any]],
 ):
     """Reads every page (up to MAX_PAGES): classify each page, route it to the model for its category,
     merge fields with page numbers (FR-CLS-005, FR-RTE-001, FR-ING-004).
@@ -235,8 +289,13 @@ def process_document(
     claimed_name = Path(file_path).name
     choices = {"category": category_choice, "doc_type": doc_type_choice,
                "subtype": subtype_choice, "language": language_choice}
+    split_gallery: List[Tuple[Image.Image, str]] = []
 
     try:
+        _step(steps, "upload", "Upload received", "done", claimed_name)
+        _step(steps, "split", "Split into page images (200 DPI) and clean up", "running")
+        yield None, "Splitting into page images...", "", "", None
+
         # 1. Ingestion & preprocessing (Module A): every page rendered at 200 DPI
         payload_a = pipe_a.process_document(file_path, claimed_filename=claimed_name)
         if payload_a.status == "rejected":
@@ -253,6 +312,14 @@ def process_document(
             page_items = [(1, Path(file_path), None)]
         total_pages = len(page_items)
         page_items = page_items[:MAX_PAGES]
+        _step(steps, "split", state="done", detail=f"{total_pages} page image(s)" + (
+            f", reading the first {len(page_items)}" if total_pages > len(page_items) else ""))
+        split_gallery = [(_thumb(p), f"Page {n} (split)") for n, p, _ in page_items if p and Path(p).exists()]
+        for n, _, _ in page_items:
+            _step(steps, f"cls{n}", f"Page {n}: classify (router model)")
+            _step(steps, f"ext{n}", f"Page {n}: extract fields")
+        _step(steps, "merge", "Validate and build JSON")
+        yield split_gallery or None, f"Split into {total_pages} page image(s).", "", "", None
 
         # 2. Rule-based hint from Module B (page-1 classification fallback)
         payload_b = pipe_b.process_handoff(payload_a)
@@ -272,11 +339,17 @@ def process_document(
         routes: List[Dict[str, Any]] = []
 
         for page_no, img_path, orig_path in page_items:
+            _step(steps, f"cls{page_no}", state="running", detail="detecting category, type and language")
+            yield (gallery or split_gallery or None, f"Page {page_no}: classifying...", "",
+                   _classification_markdown(pages_info), None)
             info = _resolve_page(img_path, claimed_name, rule_type, choices, page_no)
             category = DocumentCategory(info["category"])
             schema_cls = SCHEMA_MAP.get(info["schema_id"]) if info["schema_id"] else None
             pages_info.append(info)
-            yield (gallery or None,
+            _step(steps, f"cls{page_no}", state="done",
+                  detail=f"{category.value} · {info['document_type']} · {info['language']} · {info['category_source']}")
+            _step(steps, f"ext{page_no}", state="running", detail=f"routing to the {category.value} model")
+            yield (gallery or split_gallery or None,
                    f"Page {page_no}/{len(page_items)}: classified as {category.value} ({info['language']}). Extracting...",
                    "", _classification_markdown(pages_info), None)
 
@@ -291,6 +364,8 @@ def process_document(
             info["fallback_occurred"] = route["fallback_occurred"]
             provs.append(prov)
             routes.append({"page": page_no, **route})
+            _step(steps, f"ext{page_no}", state="done",
+                  detail=f"{route['model_used']}{' (fallback)' if route['fallback_occurred'] else ''} · {len(raw_dict)} fields")
 
             with Image.open(orig_path if orig_path and orig_path.exists() else img_path) as pil_img:
                 w, h = pil_img.size
@@ -348,6 +423,7 @@ def process_document(
             flags.append({"code": "PAGES_NOT_PROCESSED", "fields": [],
                           "detail": f"Read pages 1-{len(page_items)} of {total_pages} (demo cap DOC_MAX_PAGES={MAX_PAGES})."})
 
+        _step(steps, "merge", state="done", detail=f"{len(fields_dict)} fields · {len(flags)} flag(s)")
         first = pages_info[0]
         cats = {p["category"] for p in pages_info}
         specialists = sorted({p["model_used"] for p in pages_info})
@@ -394,7 +470,10 @@ def process_document(
         return
 
     except Exception as e:
-        yield None, f"Error: {e}", json.dumps({"error": str(e)}, indent=2), "", None
+        for r in steps:
+            if r["state"] == "running":
+                _step(steps, r["key"], state="failed", detail=str(e)[:120])
+        yield split_gallery or None, f"Error: {e}", json.dumps({"error": str(e)}, indent=2), "", None
         return
 
 
@@ -434,6 +513,8 @@ def create_demo() -> "gr.Blocks":
 
             with gr.Column(scale=2):
                 status_box = gr.Textbox(label="Status & Quality Gate", interactive=False)
+                gr.Markdown("### Pipeline steps")
+                steps_md = gr.Markdown(_render_steps([]))
                 classification_md = gr.Markdown(label="Classification Result")
                 with gr.Tab("Visual Grounding"):
                     output_image = gr.Gallery(label="Annotated pages (grounded bounding boxes)", columns=1, height=700)
@@ -444,7 +525,7 @@ def create_demo() -> "gr.Blocks":
         submit_btn.click(
             fn=process_document,
             inputs=[input_file, category_dd, doc_type_dd, subtype_dd, language_dd, engine_dd],
-            outputs=[output_image, status_box, output_json, classification_md, json_file],
+            outputs=[output_image, status_box, output_json, classification_md, json_file, steps_md],
         )
 
     return demo

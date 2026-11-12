@@ -187,11 +187,12 @@ def _resolve_page(
             auto = heuristic_classify(filename, rule_type if page_no == 1 else None)
 
     category = DocumentCategory(choices["category"].lower() if user_cat else auto.get("category", "structured"))
-    doc_type = choices["doc_type"] if user_type else (auto.get("document_type") or (rule_type if page_no == 1 else None))
-    if category != DocumentCategory.STRUCTURED and not user_type:
-        doc_type = None  # unstructured/handwritten use generic extraction unless the user picks a schema
+    detected_type = auto.get("document_type") or (rule_type if page_no == 1 else None)
+    # Dynamic by default: the model returns whatever fields are on the page. A fixed schema is bound
+    # only when the user picks a document type manually (keys will be defined per type later).
+    doc_type = choices["doc_type"] if user_type else None
     if doc_type not in SCHEMA_MAP:
-        doc_type = None  # no schema yet (e.g. DOC-04..08): generic extraction, not a wrong schema
+        doc_type = None
     language = LANGUAGES[choices["language"]] if user_lang else str(auto.get("language") or "en")
     subtype = choices["subtype"] if user_sub else auto.get("subtype")
     if category != DocumentCategory.UNSTRUCTURED or subtype in (None, "null"):
@@ -201,7 +202,7 @@ def _resolve_page(
         "page": page_no,
         "category": category.value,
         "category_source": "user" if user_cat else "auto",
-        "document_type": doc_type or auto.get("document_type") or "generic",
+        "document_type": doc_type or detected_type or "generic",
         "schema_id": doc_type,
         "type_source": "user" if user_type else "auto",
         "subtype": subtype,
@@ -416,7 +417,7 @@ def create_demo() -> "gr.Blocks":
                     )
                     doc_type_dd = gr.Dropdown(
                         choices=[AUTO, "DOC-01", "DOC-02", "DOC-03"], value=AUTO,
-                        label="Document Type (structured schemas)",
+                        label="Document Type (pick one to force its fixed schema; Auto = dynamic fields)",
                     )
                     subtype_dd = gr.Dropdown(
                         choices=[AUTO] + UNSTRUCTURED_SUBTYPES, value=AUTO,

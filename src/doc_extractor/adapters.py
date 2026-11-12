@@ -40,6 +40,33 @@ def _side_device() -> str:
     return "auto"
 
 
+def parse_json_tolerant(text: str) -> Dict[str, Any]:
+    """Parse model JSON. Strips code fences and extra prose. If the answer was cut off (token limit),
+    keep the complete fields and close the object, instead of failing the whole page."""
+    cleaned = re.sub(r"^```(?:json)?\s*", "", (text or "").strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    start = cleaned.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON object in model output: {cleaned[:200]!r}")
+    body = cleaned[start:]
+    try:
+        return json.loads(body[: body.rfind("}") + 1])
+    except json.JSONDecodeError:
+        pass
+    # Truncated: walk back to each '}' and try to close the object there
+    pos = len(body)
+    while True:
+        pos = body.rfind("}", 0, pos)
+        if pos < 0:
+            raise ValueError(f"could not recover JSON from model output: {cleaned[:200]!r}")
+        try:
+            obj = json.loads(body[: pos + 1] + "}")
+            logger.warning("OCR text step: model output was truncated; kept the complete fields")
+            return obj
+        except json.JSONDecodeError:
+            continue
+
+
 class ModelAdapter(ABC):
     """Common interface for every routed specialist."""
 
@@ -78,7 +105,7 @@ class OCRTextAdapter(ModelAdapter):
         ocr_model: str = DEFAULT_OCR_MODEL,
         text_model: str = DEFAULT_TEXT_MODEL,
         max_ocr_tokens: int = 4096,
-        max_json_tokens: int = 2048,
+        max_json_tokens: int = 6144,  # a full schema plus 'other.*' fields can exceed 2048 tokens
         load_in_4bit: bool = True,
     ) -> None:
         self.ocr_model = ocr_model
@@ -166,9 +193,7 @@ class OCRTextAdapter(ModelAdapter):
         with torch.no_grad():
             out = model.generate(**inputs, max_new_tokens=self.max_json_tokens, do_sample=False)
         text = tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        cleaned = re.sub(r"^```json\s*", "", text.strip(), flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
-        return json.loads(cleaned) if cleaned else {}
+        return parse_json_tolerant(text)
 
     def extract(self, image_path, system_prompt):
         ocr_text = self.read_text(image_path)

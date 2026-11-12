@@ -129,6 +129,12 @@ def build_generic_prompt(category: DocumentCategory, subtype: Optional[str] = No
             "with dosage and frequency (OD, BD, TDS, SOS). Keep original shorthand. If a word is uncertain "
             "return your best reading and set \"uncertain\": true on that field."
         )
+    elif category == DocumentCategory.STRUCTURED:
+        task = (
+            "This is a form with labelled fields. Extract every filled field as label -> value, using the "
+            "printed label as a snake_case field name (character-box entries joined into one string, "
+            "ticked checkboxes as true, unticked as false). Do not invent fields that are not on the form."
+        )
     else:
         sub = f" Document sub-type: {subtype}." if subtype and subtype != "other" else ""
         task = (

@@ -166,7 +166,8 @@ def process_document(
     (FR-DEMO-002..005). The category picks the model via the routing table (FR-RTE-001).
     """
     if file_obj is None:
-        return None, "No file uploaded", "{}", "", None
+        yield None, "No file uploaded", "{}", "", None
+        return
 
     pipe_a, pipe_b, pipe_c = get_pipeline()
     file_path = file_obj.name if hasattr(file_obj, "name") else str(file_obj)
@@ -177,7 +178,8 @@ def process_document(
         payload_a = pipe_a.process_document(file_path, claimed_filename=claimed_name)
         if payload_a.status == "rejected":
             err = json.dumps(payload_a.to_dict(), indent=2)
-            return None, f"Rejected: {payload_a.error}", err, "", None
+            yield None, f"Rejected: {payload_a.error}", err, "", None
+            return
 
         orig_path = None
         if payload_a.pages:
@@ -209,11 +211,10 @@ def process_document(
         category = DocumentCategory(category_choice.lower() if user_cat else auto.get("category", "structured"))
 
         doc_type = doc_type_choice if user_type else (auto.get("document_type") or rule_type)
-        if category == DocumentCategory.STRUCTURED:
-            if doc_type not in SCHEMA_MAP:
-                doc_type = "DOC-01"  # only DOC-01..03 schemas exist so far
-        else:
-            doc_type = doc_type if doc_type in SCHEMA_MAP and user_type else None
+        if category != DocumentCategory.STRUCTURED and not user_type:
+            doc_type = None  # unstructured/handwritten use generic extraction unless the user picks a schema
+        if doc_type not in SCHEMA_MAP:
+            doc_type = None  # no schema yet (e.g. DOC-04..08): generic extraction, not a wrong schema
 
         language = LANGUAGES[language_choice] if user_lang else str(auto.get("language") or "en")
         subtype = subtype_choice if user_sub else auto.get("subtype")
@@ -223,7 +224,7 @@ def process_document(
         info: Dict[str, Any] = {
             "category": category.value,
             "category_source": "user" if user_cat else "auto",
-            "document_type": doc_type or "generic",
+            "document_type": doc_type or auto.get("document_type") or "generic",
             "type_source": "user" if user_type else "auto",
             "subtype": subtype,
             "subtype_source": "user" if user_sub else "auto",
@@ -234,6 +235,8 @@ def process_document(
         }
 
         schema_cls = SCHEMA_MAP.get(doc_type) if doc_type else None
+
+        yield None, f"Classified as {category.value} ({language}). Extracting...", "", _classification_markdown(info), None
 
         # 4. Extraction
         if use_qwen_vl and img_path and img_path.exists():
@@ -302,12 +305,14 @@ def process_document(
                 f"Status: VALID | Category: {category.value} | Type: {doc_type or 'generic'} | "
                 f"Fields: {len(fields_dict)} | Model: {route['model_used']}"
             )
-            return annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
+            yield annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
+            return
 
         # CPU heuristic fast path: only the rule-based structured schemas are supported
-        if category != DocumentCategory.STRUCTURED or doc_type not in SCHEMA_MAP:
-            msg = "CPU heuristic mode only supports structured DOC-01 to DOC-03. Enable the VLM for this category."
-            return None, msg, json.dumps({"error": msg}, indent=2), _classification_markdown(info), None
+        if doc_type not in SCHEMA_MAP:
+            msg = "CPU heuristic mode only supports structured DOC-01 to DOC-03. Enable the VLM for this document."
+            yield None, msg, json.dumps({"error": msg}, indent=2), _classification_markdown(info), None
+            return
 
         payload_b.classification.document_type = MVPDocumentType(doc_type)
         payload_b.classification.schema_id = doc_type
@@ -327,10 +332,12 @@ def process_document(
             f"Confidence: {env.document_metadata.classification_confidence:.2f} | Flags: {len(env.flags)}"
         )
         json_text = json.dumps(env.model_dump(), indent=2, default=str)
-        return annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
+        yield annotated_img, status_msg, json_text, _classification_markdown(info), _write_json_download(payload_a.document_id, json_text)
+        return
 
     except Exception as e:
-        return None, f"Error: {e}", json.dumps({"error": str(e)}, indent=2), "", None
+        yield None, f"Error: {e}", json.dumps({"error": str(e)}, indent=2), "", None
+        return
 
 
 def create_demo() -> "gr.Blocks":
@@ -338,33 +345,34 @@ def create_demo() -> "gr.Blocks":
     with gr.Blocks(title="Document Extraction Engine") as demo:
         gr.Markdown(
             "# 📄 Document Extraction Engine\n"
-            "Upload a document, pick its category and type (or leave on Auto-Detect), and get classified, "
-            "grounded JSON. The category decides which model runs."
+            "Upload a document. The engine first classifies it (structured, unstructured or handwritten), "
+            "then routes it to the model for that category and returns grounded JSON."
         )
 
         with gr.Row():
             with gr.Column(scale=1):
                 input_file = gr.File(label="Upload Document (PDF, JPG, PNG, TIFF)", file_types=[".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif"])
-                category_dd = gr.Dropdown(
-                    choices=[AUTO, "Structured", "Unstructured", "Handwritten"], value=AUTO,
-                    label="Document Category",
-                )
-                doc_type_dd = gr.Dropdown(
-                    choices=[AUTO, "DOC-01", "DOC-02", "DOC-03"], value=AUTO,
-                    label="Document Type (structured schemas)",
-                )
-                subtype_dd = gr.Dropdown(
-                    choices=[AUTO] + UNSTRUCTURED_SUBTYPES, value=AUTO,
-                    label="Unstructured Sub-type (brochure, pamphlet, menu card, ...)",
-                )
-                language_dd = gr.Dropdown(
-                    choices=[AUTO] + list(LANGUAGES), value=AUTO, label="Language",
-                )
+                with gr.Accordion("Manual override (optional, leave on Auto-Detect to classify automatically)", open=False):
+                    category_dd = gr.Dropdown(
+                        choices=[AUTO, "Structured", "Unstructured", "Handwritten"], value=AUTO,
+                        label="Document Category",
+                    )
+                    doc_type_dd = gr.Dropdown(
+                        choices=[AUTO, "DOC-01", "DOC-02", "DOC-03"], value=AUTO,
+                        label="Document Type (structured schemas)",
+                    )
+                    subtype_dd = gr.Dropdown(
+                        choices=[AUTO] + UNSTRUCTURED_SUBTYPES, value=AUTO,
+                        label="Unstructured Sub-type (brochure, pamphlet, menu card, ...)",
+                    )
+                    language_dd = gr.Dropdown(
+                        choices=[AUTO] + list(LANGUAGES), value=AUTO, label="Language",
+                    )
                 use_vlm_checkbox = gr.Checkbox(
                     value=True,
                     label="🤖 Use Qwen3-VL-8B (uncheck for CPU heuristic fallback, structured DOC-01 to DOC-03 only)",
                 )
-                submit_btn = gr.Button("Extract Document", variant="primary")
+                submit_btn = gr.Button("Classify & Extract", variant="primary")
 
             with gr.Column(scale=2):
                 status_box = gr.Textbox(label="Status & Quality Gate", interactive=False)

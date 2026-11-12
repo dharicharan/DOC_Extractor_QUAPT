@@ -217,6 +217,7 @@ def _resolve_page(
         "method": "user" if user_cat else auto.get("method", "-"),
         "rotation": _safe_rotation(auto.get("rotation")),
         "router_model": auto.get("router_model"),
+        "filled_by": auto.get("filled_by"),
     }
 
 
@@ -370,6 +371,7 @@ def _process_core(
         doc_info = _resolve_page(page_items[0][1], claimed_name, rule_type, choices, 1)
         _step(steps, "cls", state="done",
               detail=f"{doc_info['category']} · {doc_info['document_type']} · {doc_info['language']} · {doc_info['category_source']}"
+                     + (f" · filled by {doc_info['filled_by']}" if doc_info.get("filled_by") else "")
                      + (f" · {doc_info['router_model'].split('/')[-1]}" if doc_info.get("router_model") else ""))
 
         rotation = doc_info.get("rotation", 0)

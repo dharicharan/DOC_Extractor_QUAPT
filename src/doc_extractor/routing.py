@@ -94,12 +94,18 @@ def select_model(category: DocumentCategory, language: str, table: Optional[Dict
 # ---------------------------------------------------------------------------
 
 CLASSIFIER_SYSTEM_PROMPT = """You classify document images. Return raw JSON only, no markdown:
-{"category": "structured|unstructured|handwritten",
+{"filled_by": "hand|machine|empty",
+ "category": "structured|unstructured|handwritten",
  "document_type": "DOC-01|DOC-02|DOC-03|DOC-04|DOC-05|DOC-06|DOC-07|DOC-08|OTHER",
  "subtype": "brochure|pamphlet|menu card|CASA leaflet|invitation card|other|null",
  "language": "en|hi|te|ta|ml",
  "confidence": 0.0-1.0,
  "rotation": 0|90|180|270}
+
+First decide "filled_by": look at the values written INTO the document (names, dates, numbers, addresses), not the printed labels.
+- "hand": the values are written by hand with a pen (ink strokes, uneven letters), even on a printed form.
+- "machine": the values are typed or printed.
+- "empty": nothing is filled in.
 
 Definitions:
 - structured: forms with labelled blanks or boxes to fill (KYC, CASA account opening DOC-01, insurance application DOC-02, loan DOC-04, credit card DOC-05, claim DOC-06).
@@ -228,6 +234,13 @@ class RoutedExtractor:
             cat = str(result.get("category", "")).lower()
             if cat not in {c.value for c in DocumentCategory}:
                 raise ValueError(f"unrecognised category {cat!r}")
+            # Hard rule (PRD 3.1): anything filled in by hand is handwritten, whatever the layout.
+            # Decided in code from the explicit "filled_by" answer, so it does not depend on the
+            # model applying the rule itself.
+            filled_by = str(result.get("filled_by", "")).lower()
+            if filled_by == "hand" and cat != DocumentCategory.HANDWRITTEN.value:
+                result["category_before_rule"] = cat
+                cat = DocumentCategory.HANDWRITTEN.value
             result["category"] = cat
             result["method"] = "vlm"
             result["router_model"] = self.router_model

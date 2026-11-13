@@ -47,6 +47,33 @@ MAX_IMAGE_PIXELS = int(os.environ.get("DOC_MAX_IMAGE_PIXELS", "1300000"))
 CLASSIFY_MAX_PIXELS = int(os.environ.get("DOC_CLASSIFY_MAX_PIXELS", "500000"))
 
 
+def parse_json_tolerant(text: str) -> Dict[str, Any]:
+    """Parse model JSON. Strips code fences and extra prose. If the answer was cut off (token limit),
+    keep the complete fields and close the object, instead of failing the whole page."""
+    cleaned = re.sub(r"^```(?:json)?\s*", "", (text or "").strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    start = cleaned.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON object in model output: {cleaned[:200]!r}")
+    body = cleaned[start:]
+    try:
+        return json.loads(body[: body.rfind("}") + 1], strict=False)
+    except json.JSONDecodeError:
+        pass
+    # Truncated: walk back to each '}' and try to close the object there
+    pos = len(body)
+    while True:
+        pos = body.rfind("}", 0, pos)
+        if pos < 0:
+            raise ValueError(f"could not recover JSON from model output: {cleaned[:200]!r}")
+        try:
+            obj = json.loads(body[: pos + 1] + "}", strict=False)
+            logger.warning("OCR text step: model output was truncated; kept the complete fields")
+            return obj
+        except json.JSONDecodeError:
+            continue
+
+
 def _flat_to_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     """VLM output {"applicant.full_name": {"value": ..., "bbox": ...}} -> nested {"applicant": {"full_name": ...}}
     so it validates against the Pydantic schema. Free-form other.* keys are dropped."""
@@ -535,9 +562,7 @@ class SchemaGuidedExtractor:
 
     @staticmethod
     def _parse_json_output(output_text: str) -> Dict[str, Any]:
-        cleaned = re.sub(r"^```json\s*", "", output_text.strip(), flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
-        return json.loads(cleaned) if cleaned else {}
+        return parse_json_tolerant(output_text)
 
     def _generate_from_image(
         self,

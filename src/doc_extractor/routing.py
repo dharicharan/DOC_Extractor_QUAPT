@@ -155,10 +155,17 @@ def build_generic_prompt(category: DocumentCategory, subtype: Optional[str] = No
     """Prompt for documents without a bound schema (unstructured, handwritten)."""
     if category == DocumentCategory.HANDWRITTEN:
         task = (
-            "This document is handwritten (for example a doctor's prescription). Read the handwriting carefully. "
-            "Extract key facts such as patient_name, age, date, doctor_name, diagnosis, and a list of medicines "
-            "with dosage and frequency (OD, BD, TDS, SOS). Keep original shorthand. If a word is uncertain "
-            "return your best reading and set \"uncertain\": true on that field."
+            "This page is handwritten. It is either a filled-in form (application, KYC, account opening, claim) "
+            "or a doctor's prescription. Read EVERY filled-in value on the page, not just a few. "
+            "FORM: one entry per labelled field that has a value, keyed by its printed label in snake_case "
+            "(for example applicant_name, date_of_birth, fathers_name, gender, marital_status, nationality, "
+            "address, city, state, pin_code, mobile, email, pan_card_number, aadhaar_number, profession, "
+            "employer, annual_income, account_type, nominee_name, relationship). Give each tick box as "
+            "true (ticked) or false (empty box) when the box is part of the form. "
+            "PRESCRIPTION: patient_name, age, date, doctor_name, diagnosis, and medicines with dosage and "
+            "frequency (OD, BD, TDS, SOS). Keep the original shorthand. "
+            "Use null only for a field that is empty or not on the page. If a word is uncertain, give your best "
+            "reading and set \"uncertain\": true on that field."
         )
     elif category == DocumentCategory.STRUCTURED:
         task = (

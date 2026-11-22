@@ -425,6 +425,9 @@ def _process_core(
                     _step(steps, "cls", "Classify document from page 1 (router model, once)")
                     for n, _, _ in page_items:
                         _step(steps, f"ext{n}", f"Page {n}: extract fields")
+                    if crop_verify.enabled():
+                        _step(steps, "crop", "Crop-verify: OpenCV finds text lines, each field is cropped and re-read",
+                              detail="runs inside each page's extraction", state="running")
                     _step(steps, "merge", "Validate and build JSON")
                     yield split_gallery or None, f"Split into {total_pages} page image(s).", "", "", None
             elif event.step_key == "cls":
@@ -496,6 +499,13 @@ def _process_core(
                            "run.provenance.details" if withheld else "")
                     )
                     cv_stats = [r.route.get("crop_verify") for r in result.page_results if r.route.get("crop_verify")]
+                    if any(r["key"] == "crop" for r in steps):
+                        _step(steps, "crop", state="done", detail=(
+                            f"{sum(c.get('detected', 0) for c in cv_stats)} text lines found, "
+                            f"{sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "
+                            f"{sum(c.get('verified', 0) for c in cv_stats)} fields cropped and re-read, "
+                            f"{sum(c.get('disagreed', 0) for c in cv_stats)} disagree (see Crop check below)"
+                        ) if cv_stats else "not used on this route (no page image read by the vision model)")
                     if cv_stats:
                         status_msg += (
                             f" | Crop-verify: {sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "

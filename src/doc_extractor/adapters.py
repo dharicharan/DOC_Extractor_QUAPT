@@ -89,7 +89,12 @@ class VLMAdapter(ModelAdapter):
             from PIL import Image
 
             with Image.open(image_path) as page:
-                return crop_verify.refine_raw(raw, page.convert("RGB"), self._extractor.read_text_crop)
+                items = []
+                stats = crop_verify.refine_raw(
+                    raw, page.convert("RGB"), self._extractor.read_text_crop, items_out=items
+                )
+            crop_verify.record(items)
+            return stats
         except Exception:  # noqa: BLE001 - optional pass must never fail the page
             logger.exception("crop-verify skipped")
             return {}

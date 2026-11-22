@@ -68,15 +68,50 @@ def detect_text_boxes(image) -> List[Box]:
     joined = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (max(9, w // 70), max(3, h // 450))))
     contours, _ = cv2.findContours(joined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    rects = [cv2.boundingRect(c) for c in contours]
+    rects = [r for r in rects if r[3] >= 0.008 * h and r[2] >= 0.012 * w]
+    heights = sorted(r[3] for r in rects if r[3] < 0.06 * h)
+    if heights:
+        rects = _split_tall(ink, rects, heights[len(heights) // 2])
+
     boxes: List[Box] = []
-    for c in contours:
-        x, y, bw, bh = cv2.boundingRect(c)
-        if bh < 0.008 * h or bw < 0.012 * w:
-            continue
+    for x, y, bw, bh in rects:
         if bw * bh > 0.35 * w * h or bh > 0.12 * h:   # photos, page borders, merged blocks
             continue
         boxes.append((1000.0 * x / w, 1000.0 * y / h, 1000.0 * (x + bw) / w, 1000.0 * (y + bh) / h))
     return boxes
+
+
+def _split_tall(ink, rects, median_h: int):
+    """Split regions that swallowed two text lines at the blank rows between them.
+
+    A region much taller than the typical line is cut where the ink profile (ink per pixel row)
+    drops to almost nothing; each piece is then tightened to its own ink. A region with no clear
+    gap is returned as it was.
+    """
+    import numpy as np
+
+    out = []
+    for x, y, bw, bh in rects:
+        if bh <= 1.7 * median_h:
+            out.append((x, y, bw, bh))
+            continue
+        prof = ink[y:y + bh, x:x + bw].sum(axis=1).astype(float)
+        k = max(3, int(median_h // 4))
+        prof = np.convolve(prof, np.ones(k) / k, mode="same")
+        rows = prof > 0.12 * prof.max()
+        pieces, start = [], None
+        for i, on in enumerate(list(rows) + [False]):
+            if on and start is None:
+                start = i
+            elif not on and start is not None:
+                if i - start >= max(3, int(0.4 * median_h)):
+                    cols = np.where(ink[y + start:y + i, x:x + bw].sum(axis=0) > 0)[0]
+                    if len(cols):
+                        pieces.append((x + int(cols[0]), y + start, int(cols[-1] - cols[0] + 1), i - start))
+                start = None
+        out.extend(pieces if len(pieces) > 1 else [(x, y, bw, bh)])
+    return out
 
 
 # --------------------------------------------------------------------------- snapping
@@ -188,6 +223,7 @@ def refine_raw(
     image,
     read_crop: Optional[Callable[[Any], str]] = None,
     limit: Optional[int] = None,
+    items_out: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Snap boxes onto detected text and verify values against a crop reading. Mutates ``raw``.
 
@@ -215,12 +251,16 @@ def refine_raw(
         if read_crop is None or stats["verified"] >= budget or isinstance(value, (dict, list)):
             continue
         try:
-            reading = read_crop(crop_region(image, new_box))
+            crop = crop_region(image, new_box)
+            reading = read_crop(crop)
         except Exception:  # noqa: BLE001
             logger.exception("crop-verify: crop read failed for %s", path)
             continue
         stats["verified"] += 1
-        if texts_agree(value, reading):
+        agree = texts_agree(value, reading)
+        if items_out is not None:
+            items_out.append({"field": path, "value": str(value), "crop": crop, "crop_text": reading, "agree": agree})
+        if agree:
             stats["agreed"] += 1
             leaf["crop_verified"] = True
         else:
@@ -232,3 +272,66 @@ def refine_raw(
             if isinstance(conf, (int, float)) and not isinstance(conf, bool):
                 leaf["confidence"] = round(float(conf) * DISAGREE_FACTOR, 4)
     return stats
+
+
+# --------------------------------------------------------------------------- demo display
+
+_RUN_ITEMS: List[Dict[str, Any]] = []
+_RUN_LOCK = __import__("threading").Lock()
+
+
+_RUN_PAGES = [0]
+
+
+def begin_run() -> None:
+    """Forget the crops of the previous document (the demo handles one document at a time)."""
+    with _RUN_LOCK:
+        _RUN_ITEMS.clear()
+        _RUN_PAGES[0] = 0
+
+
+def record(items: Sequence[Dict[str, Any]]) -> None:
+    """Keep one page's crops for display; pages are numbered in the order they are read."""
+    with _RUN_LOCK:
+        _RUN_PAGES[0] += 1
+        _RUN_ITEMS.extend({**it, "page": _RUN_PAGES[0]} for it in items)
+
+
+def collect() -> List[Dict[str, Any]]:
+    with _RUN_LOCK:
+        return list(_RUN_ITEMS)
+
+
+def _cell(text: Any) -> str:
+    import html
+
+    return html.escape(str(text)).replace("|", "&#124;").replace("\n", " ")
+
+
+def _data_uri(img, max_w: int = 300, max_h: int = 64) -> str:
+    import base64
+    import io
+
+    thumb = img.copy()
+    thumb.thumbnail((max_w, max_h))
+    buf = io.BytesIO()
+    thumb.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def render_markdown(items: Sequence[Dict[str, Any]]) -> str:
+    """One row per re-read field: the cropped image, the page reading and the crop's OCR text."""
+    if not items:
+        return ""
+    agreed = sum(1 for it in items if it["agree"])
+    rows = [
+        f"\n\n### Crop check ({agreed} of {len(items)} fields match their crop reading)\n",
+        "| Page | Field | Crop | Page reading | Crop OCR text | Match |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for it in items:
+        rows.append(
+            f"| {it.get('page', 1)} | {_cell(it['field'])} | <img src=\"{_data_uri(it['crop'])}\" height=\"48\"> "
+            f"| {_cell(it['value'])} | {_cell(it['crop_text'])} | {'✅' if it['agree'] else '❌ review'} |"
+        )
+    return "\n".join(rows)

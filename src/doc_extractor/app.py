@@ -40,6 +40,7 @@ if _src_dir not in sys.path:
 
 from PIL import Image, ImageDraw, ImageFont
 
+from doc_extractor import crop_verify
 from doc_extractor.config import Settings, load_settings
 from doc_extractor.contracts_b import MVPDocumentType
 from doc_extractor.contracts_c import CanonicalExtractionEnvelope, FlagItem
@@ -322,6 +323,7 @@ def process_document(
 ):
     """UI entry point: runs the pipeline and adds the live pipeline-steps panel to every update."""
     steps: List[Dict[str, Any]] = []
+    crop_verify.begin_run()
     for out in _process_core(file_obj, category_choice, doc_type_choice, subtype_choice,
                              language_choice, engine_choice, steps, settings):
         yield (*out, _render_steps(steps))
@@ -493,11 +495,18 @@ def _process_core(
                         + (" | No boxes on this route: values withheld (EVIDENCE_MISSING); unverified readings are in "
                            "run.provenance.details" if withheld else "")
                     )
+                    cv_stats = [r.route.get("crop_verify") for r in result.page_results if r.route.get("crop_verify")]
+                    if cv_stats:
+                        status_msg += (
+                            f" | Crop-verify: {sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "
+                            f"{sum(c.get('verified', 0) for c in cv_stats)} re-read, "
+                            f"{sum(c.get('disagreed', 0) for c in cv_stats)} disagree"
+                        )
                     yield (
                         gallery,
                         status_msg,
                         json_text,
-                        _classification_markdown(result.pages_info),
+                        _classification_markdown(result.pages_info) + crop_verify.render_markdown(crop_verify.collect()),
                         _write_json_download(result.document_id, json_text),
                     )
                     return

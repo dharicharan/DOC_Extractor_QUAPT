@@ -64,3 +64,26 @@ def test_disabled_unless_flag_set(monkeypatch):
     assert not cv.enabled()
     monkeypatch.setenv("DOC_CROP_VERIFY", "1")
     assert cv.enabled()
+
+
+def test_two_close_lines_are_not_merged_into_one_region():
+    img = Image.new("RGB", (1000, 1400), "white")
+    d = ImageDraw.Draw(img)
+    font = ImageFont.load_default(size=30)
+    d.text((300, 300), "Rajesh Kumar Sharma", fill="black", font=font)
+    d.text((300, 338), "12/03/1985", fill="black", font=font)
+    column = [b for b in cv.detect_text_boxes(img) if b[0] < 450 < b[2]]
+    assert len(column) >= 2, column
+
+
+def test_crop_table_shows_each_crop_its_page_reading_and_crop_text():
+    cv.begin_run()
+    items = []
+    cv.refine_raw({"a": {"value": "Rajesh Kumar Sharma", "bbox": [290, 205, 430, 222], "confidence": 0.9}},
+                  _page(), lambda crop: "Rajesh Sharma", items_out=items)
+    cv.record(items)
+    md = cv.render_markdown(cv.collect())
+    assert "Crop check" in md and "data:image/png;base64," in md
+    assert "Rajesh Kumar Sharma" in md and "Rajesh Sharma" in md and "review" in md
+    cv.begin_run()
+    assert cv.render_markdown(cv.collect()) == ""

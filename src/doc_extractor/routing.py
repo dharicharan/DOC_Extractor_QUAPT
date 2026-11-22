@@ -347,6 +347,8 @@ class RoutedExtractor:
                     "fallback_occurred": i > 0,
                     "routing_table_version": self.table.get("version"),
                 }
+                if "crop_verify" in meta:
+                    info["crop_verify"] = meta["crop_verify"]
                 if "ocr_text_preview" in meta:
                     info["ocr_text_preview"] = meta["ocr_text_preview"]
                 return raw, prov, info

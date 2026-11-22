@@ -1139,21 +1139,6 @@ class SchemaGuidedExtractor:
         self.last_provenance = prov
         return raw_dict, prov
 
-    def read_text_crop(self, image) -> str:
-        """Transcribe one small cropped region (used by the crop-verify pass); returns plain text."""
-        import io
-
-        buf = io.BytesIO()
-        image.convert("RGB").save(buf, format="PNG")   # _generate_from_image takes a path or encoded bytes
-        text = self._generate_from_image(
-            buf.getvalue(),
-            "You are an OCR engine. Output only the text in the image, exactly as written, on one line. "
-            "No explanation, no quotes.",
-            "Transcribe the text.",
-            max_new_tokens=48,
-        )
-        return text.strip().strip('"').strip()
-
     def classify_page_image(self, image_input: Union[str, Path, bytes]) -> Dict[str, Any]:
         """Ask the VLM for document category, language and type (FR-CLS-005, FR-CLS-007).
 

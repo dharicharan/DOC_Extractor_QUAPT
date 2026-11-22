@@ -38,10 +38,6 @@ while "." in sys.path:
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
-# The demo runs the crop-and-verify pass (OpenCV box snapping + per-field crop re-read).
-# Set DOC_CROP_VERIFY=0 before launch to compare against the plain run.
-os.environ.setdefault("DOC_CROP_VERIFY", "1")
-
 from PIL import Image, ImageDraw, ImageFont
 
 from doc_extractor.config import Settings, load_settings
@@ -571,6 +567,9 @@ def create_demo(settings: Optional[Settings] = None) -> "gr.Blocks":
 
 
 if __name__ == "__main__":
+    # The demo runs the crop-and-verify pass (OpenCV box snapping + per-field crop re-read).
+    # Set only when launched, so importing this module never changes the environment.
+    os.environ.setdefault("DOC_CROP_VERIFY", "1")
     if gr is None:
         print("Gradio is not installed. Run: pip install gradio")
     else:

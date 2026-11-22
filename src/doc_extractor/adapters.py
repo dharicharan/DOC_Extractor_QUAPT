@@ -22,6 +22,7 @@ import re
 import threading
 from typing import Any, Dict, Optional, Tuple
 
+from doc_extractor import crop_verify
 from doc_extractor.contracts_c import ExecutionMode, ExecutionProvenance
 from doc_extractor.extractor import (
     attach_field_confidence,
@@ -67,6 +68,8 @@ class ModelAdapter(ABC):
 
 class VLMAdapter(ModelAdapter):
     kind = "vlm"
+    # The crop-and-verify pass is for handwritten pages only; the router sets this per page.
+    crop_verify_allowed = False
 
     def __init__(self, extractor) -> None:
         self._extractor = extractor
@@ -77,7 +80,26 @@ class VLMAdapter(ModelAdapter):
 
     def extract(self, image_path, system_prompt):
         raw, prov = self._extractor.extract_page_image(image_path, None, system_prompt=system_prompt)
-        return raw, prov, {"grounded": True, "models": {"specialist": self.model_label}}
+        meta = {"grounded": True, "models": {"specialist": self.model_label}}
+        if self.crop_verify_allowed and crop_verify.enabled():
+            meta["crop_verify"] = self._crop_verify(raw, image_path)
+        return raw, prov, meta
+
+    def _crop_verify(self, raw, image_path):
+        """Snap boxes onto detected text and re-read each value from its crop (DOC_CROP_VERIFY=1)."""
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as page:
+                items = []
+                stats = crop_verify.refine_raw(
+                    raw, page.convert("RGB"), self._extractor.read_text_crop, items_out=items
+                )
+            crop_verify.record(items)
+            return stats
+        except Exception:  # noqa: BLE001 - optional pass must never fail the page
+            logger.exception("crop-verify skipped")
+            return {}
 
 
 class OCRTextAdapter(ModelAdapter):

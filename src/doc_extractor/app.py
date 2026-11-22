@@ -40,6 +40,7 @@ if _src_dir not in sys.path:
 
 from PIL import Image, ImageDraw, ImageFont
 
+from doc_extractor import crop_verify
 from doc_extractor.config import Settings, load_settings
 from doc_extractor.contracts_b import MVPDocumentType
 from doc_extractor.contracts_c import CanonicalExtractionEnvelope, FlagItem
@@ -322,6 +323,7 @@ def process_document(
 ):
     """UI entry point: runs the pipeline and adds the live pipeline-steps panel to every update."""
     steps: List[Dict[str, Any]] = []
+    crop_verify.begin_run()
     for out in _process_core(file_obj, category_choice, doc_type_choice, subtype_choice,
                              language_choice, engine_choice, steps, settings):
         yield (*out, _render_steps(steps))
@@ -423,6 +425,9 @@ def _process_core(
                     _step(steps, "cls", "Classify document from page 1 (router model, once)")
                     for n, _, _ in page_items:
                         _step(steps, f"ext{n}", f"Page {n}: extract fields")
+                    if crop_verify.enabled():
+                        _step(steps, "crop", "Crop-verify: OpenCV finds text lines, each field is cropped and re-read",
+                              detail="runs inside each page's extraction", state="running")
                     _step(steps, "merge", "Validate and build JSON")
                     yield split_gallery or None, f"Split into {total_pages} page image(s).", "", "", None
             elif event.step_key == "cls":
@@ -493,11 +498,29 @@ def _process_core(
                         + (" | No boxes on this route: values withheld (EVIDENCE_MISSING); unverified readings are in "
                            "run.provenance.details" if withheld else "")
                     )
+                    cv_stats = [r.route.get("crop_verify") for r in result.page_results if r.route.get("crop_verify")]
+                    if any(r["key"] == "crop" for r in steps):
+                        _step(steps, "crop", state="done", detail=(
+                            f"{sum(c.get('detected', 0) for c in cv_stats)} text lines found, "
+                            f"{sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "
+                            f"{sum(c.get('verified', 0) for c in cv_stats)} low-confidence or ID fields cropped and re-read, "
+                            f"{sum(c.get('skipped_confident', 0) for c in cv_stats)} confident fields kept, "
+                            f"{sum(c.get('disagreed', 0) for c in cv_stats)} disagree (see Crop check below)"
+                            + (f" · {sum(c.get('errors', 0) for c in cv_stats)} crop reads FAILED: "
+                               f"{next((c['first_error'] for c in cv_stats if c.get('first_error')), '')}"
+                               if any(c.get('errors') for c in cv_stats) else "")
+                        ) if cv_stats else "not used on this route (no page image read by the vision model)")
+                    if cv_stats:
+                        status_msg += (
+                            f" | Crop-verify: {sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "
+                            f"{sum(c.get('verified', 0) for c in cv_stats)} re-read, "
+                            f"{sum(c.get('disagreed', 0) for c in cv_stats)} disagree"
+                        )
                     yield (
                         gallery,
                         status_msg,
                         json_text,
-                        _classification_markdown(result.pages_info),
+                        _classification_markdown(result.pages_info) + crop_verify.render_markdown(crop_verify.collect()),
                         _write_json_download(result.document_id, json_text),
                     )
                     return
@@ -567,6 +590,9 @@ def create_demo(settings: Optional[Settings] = None) -> "gr.Blocks":
 
 
 if __name__ == "__main__":
+    # The demo runs the crop-and-verify pass (OpenCV box snapping + per-field crop re-read).
+    # Set only when launched, so importing this module never changes the environment.
+    os.environ.setdefault("DOC_CROP_VERIFY", "1")
     if gr is None:
         print("Gradio is not installed. Run: pip install gradio")
     else:

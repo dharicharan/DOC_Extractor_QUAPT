@@ -196,7 +196,9 @@ def build_generic_prompt(category: DocumentCategory, subtype: Optional[str] = No
             "(d) If an entry is struck out, overwritten or corrected, give the final reading and set "
             "\"uncertain\": true. "
             "(e) Repeating entries (several nominees, medicines, dependents) go in a list of objects, in page "
-            "order, each item with its own bbox."
+            "order, each item with its own bbox. "
+            "(f) Leave out fields that are empty. Never write the word \"null\", \"N/A\" or \"-\" as a value. "
+            "(g) Give exact box coordinates around the ink, not numbers rounded to 50 or 100."
         )
     elif category == DocumentCategory.STRUCTURED:
         task = (

@@ -246,6 +246,16 @@ class PageLeaf:
     confidence: Optional[float] = None   # measured token probability of the value text (FR-CNF-001)
 
 
+_NULL_WORDS = {"null", "none", "nil", "n/a", "na", "not available", "not applicable", "not visible", "empty", "-", "--"}
+
+
+def _null_word_to_none(value: Any) -> Any:
+    """A model that writes the word "null" (or "N/A", "none", "-") means no value (FR-EXT-003)."""
+    if isinstance(value, str) and value.strip().strip(".").lower() in _NULL_WORDS:
+        return None
+    return value
+
+
 def _valid_probability(x: Any) -> Optional[float]:
     """A model probability in [0, 1]; anything else (missing, bool, NaN, out of range) is no signal."""
     if isinstance(x, bool) or not isinstance(x, (int, float)) or x != x or not 0.0 <= float(x) <= 1.0:
@@ -266,7 +276,9 @@ def collect_schema_leaves(raw: Dict[str, Any], schema_cls: Type[BaseModel]) -> D
         if resolved is None:
             continue  # ignore fields outside the bound schema
         canonical_path, leaf_type = resolved
-        value = _coerce_leaf(canonical_path.split(".")[-1], leaf.get("value"), _unwrap_optional(leaf_type))
+        value = _coerce_leaf(
+            canonical_path.split(".")[-1], _null_word_to_none(leaf.get("value")), _unwrap_optional(leaf_type)
+        )
         if value is None:
             continue
         leaves[canonical_path] = PageLeaf(
@@ -287,6 +299,7 @@ def collect_generic_leaves(raw: Dict[str, Any]) -> Dict[str, PageLeaf]:
     leaves: Dict[str, PageLeaf] = {}
     for path, leaf in flatten_vlm_output(raw).items():
         value = leaf.get("value")
+        value = _null_word_to_none(value)
         if isinstance(value, str):
             if not value.strip():
                 continue

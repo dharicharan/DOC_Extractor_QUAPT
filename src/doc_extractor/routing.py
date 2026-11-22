@@ -184,7 +184,19 @@ def build_generic_prompt(category: DocumentCategory, subtype: Optional[str] = No
             "PRESCRIPTION: patient_name, age, date, doctor_name, diagnosis, and medicines with dosage and "
             "frequency (OD, BD, TDS, SOS). Keep the original shorthand. "
             "Use null only for a field that is empty or not on the page. If a word is uncertain, give your best "
-            "reading and set \"uncertain\": true on that field."
+            "reading and set \"uncertain\": true on that field. "
+            "READING RULES (handwriting): "
+            "(a) Read each value from its own box or line, next to its own label. Never copy a value from one "
+            "field into another; two different fields (for example PAN and Aadhaar) almost never hold the same "
+            "value, so if they seem to, read both boxes again. "
+            "(b) Transcribe the complete entry exactly as written: every word, initial and digit (all parts of "
+            "a name, the whole address). Do not shorten, reorder or correct it. "
+            "(c) Printed labels, section headings and rubber stamps are not filled-in values. Never turn printed "
+            "text or a stamp into true/false. "
+            "(d) If an entry is struck out, overwritten or corrected, give the final reading and set "
+            "\"uncertain\": true. "
+            "(e) Repeating entries (several nominees, medicines, dependents) go in a list of objects, in page "
+            "order, each item with its own bbox."
         )
     elif category == DocumentCategory.STRUCTURED:
         task = (

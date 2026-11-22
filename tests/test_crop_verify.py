@@ -109,3 +109,19 @@ def test_failed_crop_reads_are_counted_and_reported():
 
     stats = cv.refine_raw(raw, _page(), boom)
     assert stats["errors"] == 1 and "model said no" in stats["first_error"] and stats["verified"] == 0
+
+
+def test_read_text_crop_hands_the_model_encoded_bytes_not_an_image_object():
+    """The real _generate_from_image accepts a path or encoded bytes only (an Image object crashed on Kaggle)."""
+    from doc_extractor.extractor import SchemaGuidedExtractor
+
+    seen = {}
+
+    def fake_generate(self, image_input, system_prompt, user_text, max_new_tokens, max_pixels=None):
+        seen["input"] = image_input
+        return ' "ABCDE1234F" '
+
+    ext = SchemaGuidedExtractor.__new__(SchemaGuidedExtractor)
+    ext._generate_from_image = fake_generate.__get__(ext)
+    assert ext.read_text_crop(Image.new("RGB", (120, 40), "white")) == "ABCDE1234F"
+    assert isinstance(seen["input"], bytes) and seen["input"][:4] == b"\x89PNG"

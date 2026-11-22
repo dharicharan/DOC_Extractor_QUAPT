@@ -1141,8 +1141,12 @@ class SchemaGuidedExtractor:
 
     def read_text_crop(self, image) -> str:
         """Transcribe one small cropped region (used by the crop-verify pass); returns plain text."""
+        import io
+
+        buf = io.BytesIO()
+        image.convert("RGB").save(buf, format="PNG")   # _generate_from_image takes a path or encoded bytes
         text = self._generate_from_image(
-            image,
+            buf.getvalue(),
             "You are an OCR engine. Output only the text in the image, exactly as written, on one line. "
             "No explanation, no quotes.",
             "Transcribe the text.",

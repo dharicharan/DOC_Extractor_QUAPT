@@ -125,3 +125,38 @@ def test_read_text_crop_hands_the_model_encoded_bytes_not_an_image_object():
     ext._generate_from_image = fake_generate.__get__(ext)
     assert ext.read_text_crop(Image.new("RGB", (120, 40), "white")) == "ABCDE1234F"
     assert isinstance(seen["input"], bytes) and seen["input"][:4] == b"\x89PNG"
+
+
+class _FakeVLM:
+    model_name = "fake-vlm"
+
+    def extract_page_image(self, image_path, schema, system_prompt=None):
+        return {"a": {"value": "Rajesh Kumar Sharma", "bbox": [290, 205, 430, 222], "confidence": 0.9}}, object()
+
+    def read_text_crop(self, image):
+        return "Rajesh Kumar Sharma"
+
+
+def _run_adapter(tmp_path, monkeypatch, allowed):
+    from doc_extractor.adapters import VLMAdapter
+
+    monkeypatch.setenv("DOC_CROP_VERIFY", "1")
+    page = tmp_path / "p.png"
+    _page().save(page)
+    adapter = VLMAdapter(_FakeVLM())
+    adapter.crop_verify_allowed = allowed
+    return adapter.extract(str(page), "prompt")[2]
+
+
+def test_crop_verify_runs_on_the_vision_model_only_when_the_page_is_allowed(tmp_path, monkeypatch):
+    assert "crop_verify" in _run_adapter(tmp_path, monkeypatch, True)
+    assert "crop_verify" not in _run_adapter(tmp_path, monkeypatch, False)
+
+
+def test_the_router_allows_crop_verify_for_handwritten_pages_only():
+    import inspect
+
+    from doc_extractor import routing
+
+    src = inspect.getsource(routing)
+    assert "adapter.crop_verify_allowed = category == DocumentCategory.HANDWRITTEN" in src

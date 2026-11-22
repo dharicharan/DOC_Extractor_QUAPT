@@ -332,6 +332,9 @@ class RoutedExtractor:
         for i, route in enumerate(candidates):
             try:
                 adapter = self.get_adapter(route)
+                if hasattr(adapter, "crop_verify_allowed"):
+                    # OpenCV crop-and-re-read is for handwritten pages; digital pages skip it
+                    adapter.crop_verify_allowed = category == DocumentCategory.HANDWRITTEN
                 raw, prov, meta = adapter.extract(image_path, prompt)
                 if i > 0:
                     prov.fallback_occurred = True

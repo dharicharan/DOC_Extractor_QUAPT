@@ -68,6 +68,8 @@ class ModelAdapter(ABC):
 
 class VLMAdapter(ModelAdapter):
     kind = "vlm"
+    # The crop-and-verify pass is for handwritten pages only; the router sets this per page.
+    crop_verify_allowed = False
 
     def __init__(self, extractor) -> None:
         self._extractor = extractor
@@ -79,7 +81,7 @@ class VLMAdapter(ModelAdapter):
     def extract(self, image_path, system_prompt):
         raw, prov = self._extractor.extract_page_image(image_path, None, system_prompt=system_prompt)
         meta = {"grounded": True, "models": {"specialist": self.model_label}}
-        if crop_verify.enabled():
+        if self.crop_verify_allowed and crop_verify.enabled():
             meta["crop_verify"] = self._crop_verify(raw, image_path)
         return raw, prov, meta
 

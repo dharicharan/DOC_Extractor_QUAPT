@@ -505,6 +505,9 @@ def _process_core(
                             f"{sum(c.get('snapped', 0) for c in cv_stats)} boxes snapped, "
                             f"{sum(c.get('verified', 0) for c in cv_stats)} fields cropped and re-read, "
                             f"{sum(c.get('disagreed', 0) for c in cv_stats)} disagree (see Crop check below)"
+                            + (f" · {sum(c.get('errors', 0) for c in cv_stats)} crop reads FAILED: "
+                               f"{next((c['first_error'] for c in cv_stats if c.get('first_error')), '')}"
+                               if any(c.get('errors') for c in cv_stats) else "")
                         ) if cv_stats else "not used on this route (no page image read by the vision model)")
                     if cv_stats:
                         status_msg += (

@@ -87,3 +87,25 @@ def test_crop_table_shows_each_crop_its_page_reading_and_crop_text():
     assert "Rajesh Kumar Sharma" in md and "Rajesh Sharma" in md and "review" in md
     cv.begin_run()
     assert cv.render_markdown(cv.collect()) == ""
+
+
+def test_a_snap_that_blows_the_box_up_is_rejected():
+    vlm = (100.0, 500.0, 300.0, 520.0)
+    strip = (0.0, 495.0, 700.0, 525.0)            # page-wide ruled strip
+    assert cv.snap_bbox(vlm, [strip]) == vlm
+
+
+def test_two_fields_never_share_one_snapped_line():
+    raw = {"a": {"value": "x", "bbox": [290, 206, 430, 222]}, "b": {"value": "y", "bbox": [290, 207, 430, 223]}}
+    cv.refine_raw(raw, _page(), None)
+    assert raw["a"]["bbox"] != raw["b"]["bbox"] or raw["a"]["bbox"] == [290, 206, 430, 222]
+
+
+def test_failed_crop_reads_are_counted_and_reported():
+    raw = {"a": {"value": "Rajesh Kumar Sharma", "bbox": [290, 205, 430, 222], "confidence": 0.9}}
+
+    def boom(crop):
+        raise RuntimeError("model said no")
+
+    stats = cv.refine_raw(raw, _page(), boom)
+    assert stats["errors"] == 1 and "model said no" in stats["first_error"] and stats["verified"] == 0

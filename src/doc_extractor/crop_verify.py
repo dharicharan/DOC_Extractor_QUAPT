@@ -76,7 +76,7 @@ def detect_text_boxes(image) -> List[Box]:
 
     boxes: List[Box] = []
     for x, y, bw, bh in rects:
-        if bw * bh > 0.35 * w * h or bh > 0.12 * h:   # photos, page borders, merged blocks
+        if bw * bh > 0.35 * w * h or bh > 0.12 * h or bw > 0.7 * w:   # photos, borders, ruled strips
             continue
         boxes.append((1000.0 * x / w, 1000.0 * y / h, 1000.0 * (x + bw) / w, 1000.0 * (y + bh) / h))
     return boxes
@@ -136,7 +136,7 @@ def snap_bbox(vlm_box: Box, detected: Sequence[Box]) -> Box:
     if not detected:
         return vlm_box
     best = max(detected, key=lambda d: _iou(vlm_box, d))
-    if _iou(vlm_box, best) < MIN_IOU_TO_SNAP:
+    if _iou(vlm_box, best) < MIN_IOU_TO_SNAP or not _plausible(vlm_box, best):
         return vlm_box
     # Grow along the same line to cover neighbouring words that sit inside the VLM box's width.
     x1, y1, x2, y2 = best
@@ -154,7 +154,15 @@ def snap_bbox(vlm_box: Box, detected: Sequence[Box]) -> Box:
                 nx1, nx2 = min(x1, d[0]), max(x2, d[2])
                 if (nx1, nx2) != (x1, x2):
                     x1, x2, grew = nx1, nx2, True
-    return (x1, y1, x2, y2)
+    grown = (x1, y1, x2, y2)
+    return grown if _plausible(vlm_box, grown) else best
+
+
+def _plausible(vlm_box: Box, snapped: Box) -> bool:
+    """A snap may tighten or shift a box, not blow it up: reject much wider or taller results."""
+    vw, vh = vlm_box[2] - vlm_box[0], vlm_box[3] - vlm_box[1]
+    sw, sh = snapped[2] - snapped[0], snapped[3] - snapped[1]
+    return sw <= 1.6 * vw + 5.0 and sh <= 2.0 * vh + 5.0
 
 
 # --------------------------------------------------------------------------- verification
@@ -230,7 +238,8 @@ def refine_raw(
     ``read_crop(pil_crop) -> text`` is the model call; without it only the boxes are snapped.
     Returns counts for the run record: ``snapped``, ``verified``, ``agreed``, ``disagreed``.
     """
-    stats = {"snapped": 0, "verified": 0, "agreed": 0, "disagreed": 0, "detected": 0}
+    stats: Dict[str, Any] = {"snapped": 0, "verified": 0, "agreed": 0, "disagreed": 0, "detected": 0, "errors": 0}
+    claimed: set = set()
     try:
         detected = detect_text_boxes(image)
     except Exception:  # noqa: BLE001 - never break extraction because of the optional pass
@@ -245,7 +254,10 @@ def refine_raw(
         if value is None or box is None:
             continue
         new_box = snap_bbox(box, detected)
+        if new_box != box and tuple(round(v, 1) for v in new_box) in claimed:
+            new_box = box          # another field already took this line: keep this field's own box
         if new_box != box:
+            claimed.add(tuple(round(v, 1) for v in new_box))
             leaf["bbox"] = [round(v, 1) for v in new_box]
             stats["snapped"] += 1
         if read_crop is None or stats["verified"] >= budget or isinstance(value, (dict, list)):
@@ -253,8 +265,10 @@ def refine_raw(
         try:
             crop = crop_region(image, new_box)
             reading = read_crop(crop)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception("crop-verify: crop read failed for %s", path)
+            stats["errors"] += 1
+            stats.setdefault("first_error", f"{type(exc).__name__}: {str(exc)[:160]}")
             continue
         stats["verified"] += 1
         agree = texts_agree(value, reading)

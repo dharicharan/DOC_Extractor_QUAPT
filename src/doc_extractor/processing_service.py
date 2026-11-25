@@ -83,6 +83,7 @@ ENGINE_CHOICES: Dict[str, Optional[str]] = {
     "Follow routing table": None,
     "GLM-OCR + Qwen3-4B-Instruct text (experimental)": "ocr_text",
     "GLM-OCR + Qwen2.5-7B text (experimental, comparison)": "ocr_text_7b",
+    "Full page text (OCR as JSON, no field picking)": "page_text",
 }
 
 
@@ -99,7 +100,7 @@ def resolve_engine_choice(engine_choice: Optional[str]) -> Optional[str]:
         return None
     if engine_choice in ENGINE_CHOICES:
         return ENGINE_CHOICES[engine_choice]
-    if engine_choice in ("ocr_text", "ocr_text_7b"):
+    if engine_choice in ("ocr_text", "ocr_text_7b", "page_text"):
         return engine_choice
     logger.warning("Unrecognized engine choice %r; falling back to default routing table.", engine_choice)
     return None

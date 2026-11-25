@@ -225,6 +225,28 @@ OUTPUT FORMAT:
 """
 
 
+PAGE_TEXT_ENGINE = "page_text"
+PAGE_TEXT_MAX_NEW_TOKENS = 4096      # a whole page of text is much longer than a list of fields
+
+
+def build_page_text_prompt(category: DocumentCategory, subtype: Optional[str] = None, language: str = "en") -> str:
+    """Prompt for whole-page OCR: every piece of text in reading order, no field picking."""
+    kind = category.value + (f" ({subtype})" if subtype and subtype != "other" else "")
+    return f"""You are a high-precision OCR engine. Document language: {language}. Page category: {kind}.
+
+TASK:
+Transcribe ALL the text on this page, printed and handwritten, from top to bottom in reading order. Do not pick
+fields, summarise, translate or correct anything. Split the page into blocks: a heading, a paragraph, one
+label-with-its-value line, one list item, one table row (cells separated by " | "), one tick-box line
+(write "[x] label" when ticked and "[ ] label" when empty), a stamp, or a signature.
+
+OUTPUT FORMAT (the key is the block type and its number in reading order):
+{{"<heading|text|field|list_item|table_row|checkbox|stamp|signature>_<001>": {{"value": "<the text exactly as written>", "bbox": [x1, y1, x2, y2]}}, ...}}
+
+{_COMMON_RULES}
+"""
+
+
 # ---------------------------------------------------------------------------
 # Routed extraction with fallback (FR-RTE-001, FR-RTE-003, FR-RTE-004)
 # ---------------------------------------------------------------------------
@@ -325,7 +347,10 @@ class RoutedExtractor:
         that entry of table["alt_engines"] for side-by-side comparison.
         """
         default = self.table.get("default_model", DEFAULT_MODEL)
-        if engine and engine != "vlm":
+        page_text = engine == PAGE_TEXT_ENGINE
+        if page_text:
+            routed = default            # one vision model reads every category, so each block has a box
+        elif engine and engine != "vlm":
             alt = self.table.get("alt_engines", {}).get(engine)
             if alt is None:
                 raise ValueError(f"unknown engine {engine!r}")
@@ -334,7 +359,9 @@ class RoutedExtractor:
             routed = select_route(category, language, self.table)
 
         default_extractor = self.get_extractor(default)
-        if schema_cls is not None and category == DocumentCategory.STRUCTURED:
+        if page_text:
+            prompt = build_page_text_prompt(category, subtype, language)
+        elif schema_cls is not None and category == DocumentCategory.STRUCTURED:
             prompt = default_extractor._build_system_prompt(schema_cls)
         else:
             prompt = build_generic_prompt(category, subtype, language)
@@ -346,7 +373,14 @@ class RoutedExtractor:
         for i, route in enumerate(candidates):
             try:
                 adapter = self.get_adapter(route)
-                raw, prov, meta = adapter.extract(image_path, prompt)
+                usual_tokens = getattr(default_extractor, "max_new_tokens", None)
+                if page_text and usual_tokens:
+                    default_extractor.max_new_tokens = max(usual_tokens, PAGE_TEXT_MAX_NEW_TOKENS)
+                try:
+                    raw, prov, meta = adapter.extract(image_path, prompt)
+                finally:
+                    if page_text and usual_tokens:
+                        default_extractor.max_new_tokens = usual_tokens
                 if i > 0:
                     prov.fallback_occurred = True
                     prov.fallback_reason = f"routed model {routed_label} failed: {last_exc}"

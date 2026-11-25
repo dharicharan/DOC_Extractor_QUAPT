@@ -59,7 +59,8 @@ def test_alt_engines_offer_the_comparison_specialists():
     assert set(TABLE["alt_engines"]) == {"ocr_text", "ocr_text_7b"}
     assert TABLE["alt_engines"]["ocr_text_7b"]["text_model"] == "Qwen/Qwen2.5-7B-Instruct"
     assert app.ENGINE_CHOICES["Follow routing table"] is None
-    assert set(filter(None, app.ENGINE_CHOICES.values())) == set(TABLE["alt_engines"])
+    # "page_text" is the whole-page OCR output option, not a comparison specialist
+    assert set(filter(None, app.ENGINE_CHOICES.values())) == set(TABLE["alt_engines"]) | {routing.PAGE_TEXT_ENGINE}
 
 
 def test_get_adapter_builds_and_caches_the_right_kind():

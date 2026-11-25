@@ -66,6 +66,7 @@ from doc_extractor.routing import (
     heuristic_classify,
 )
 from doc_extractor.storage import LocalDiskStorage
+from doc_extractor.vlm_grounding import flatten_vlm_output
 
 AUTO = "Auto-Detect"
 TENANT_ID = "test_tenant"
@@ -74,6 +75,7 @@ ENGINE_CHOICES = {
     "Follow routing table": None,
     "GLM-OCR + Qwen3-4B-Instruct text (experimental)": "ocr_text",
     "GLM-OCR + Qwen2.5-7B text (experimental, comparison)": "ocr_text_7b",
+    "Full page text (OCR as JSON, no field picking)": "page_text",
 }
 
 try:
@@ -306,6 +308,36 @@ def _rotate_page(
     return service_rotate_page(path, clockwise_deg, workspace=workspace, page_no=page_no)
 
 
+def _page_text_json(result) -> Dict[str, Any]:
+    """The whole page as OCR text blocks: category, sub-type, then every block in reading order.
+
+    Built from each page's own model output, so text is neither merged across pages nor withheld.
+    Boxes are on the 0-1000 page grid.
+    """
+    meta = result.envelope.document_metadata
+    pages = []
+    for page in result.page_results:
+        blocks = []
+        for key, leaf in flatten_vlm_output(page.raw or {}).items():
+            value = leaf.get("value")
+            text = "" if value is None else str(value).strip()
+            if not text or text.lower() == "null":
+                continue
+            kind = key.split(".")[-1].rstrip("0123456789").rstrip("_") or "text"
+            blocks.append({"type": kind, "text": text, "bbox": leaf.get("bbox")})
+        entry = {"page": page.page_number, "blocks": blocks, "full_text": "\n".join(b["text"] for b in blocks)}
+        if page.error:
+            entry["error"] = page.error
+        pages.append(entry)
+    return {
+        "document_category": meta.document_category,
+        "document_subtype": meta.document_subtype,
+        "language": meta.language,
+        "bbox_scale": "0-1000",
+        "pages": pages,
+    }
+
+
 def _thumb(path: Path) -> Image.Image:
     with Image.open(path) as im:
         return im.convert("RGB").copy()
@@ -487,6 +519,20 @@ def _process_core(
                         {p.get("model_used") for p in result.pages_info if p.get("model_used") not in (None, "-")}
                     )
                     total_pages = event.data.get("total_pages", len(page_items)) if event.data else len(page_items)
+                    if ENGINE_CHOICES.get(engine_choice) == "page_text":
+                        text_doc = _page_text_json(result)
+                        json_text = json.dumps(text_doc, indent=2, ensure_ascii=False)
+                        yield (
+                            gallery,
+                            f"Full page text | Category: {text_doc['document_category']} | "
+                            f"Sub-type: {text_doc['document_subtype'] or '-'} | Pages read: {len(page_items)}/{total_pages} | "
+                            f"Text blocks: {sum(len(p['blocks']) for p in text_doc['pages'])} | "
+                            f"Model(s): {', '.join(specialists) or '-'}",
+                            json_text,
+                            _classification_markdown(result.pages_info),
+                            _write_json_download(result.document_id, json_text),
+                        )
+                        return
                     status_msg = (
                         f"Status: {env.document_metadata.status.upper()} | Pages read: {len(page_items)}/{total_pages} | "
                         f"Fields: {len(env.fields)} | Flags: {len(env.flags)} | Model(s): {', '.join(specialists) or '-'}"
@@ -542,7 +588,7 @@ def create_demo(settings: Optional[Settings] = None) -> "gr.Blocks":
                     )
                     engine_dd = gr.Dropdown(
                         choices=list(ENGINE_CHOICES), value="Follow routing table",
-                        label="Engine (compare the default VLM with GLM-OCR + text LLM; the OCR route has no boxes)",
+                        label="Output / engine (fields by default; or the full page text as JSON; or compare GLM-OCR + text LLM)",
                     )
                 submit_btn = gr.Button("Classify & Extract", variant="primary")
 
